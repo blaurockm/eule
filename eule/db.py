@@ -5,18 +5,28 @@ Liest DATABASE_URL direkt aus den Hase .env-Dateien — kein Hase-Import noetig.
 """
 
 import json
+import os
 from pathlib import Path
 
 import psycopg
 from dotenv import dotenv_values
 
-# Hase-Environments: env-name -> (config_dir, runtime_name aus config.json)
-HASE_BASE = Path.home() / "fin" / "hase"
 
-ENV_DIRS: dict[str, Path] = {
-    "real-ibkr": HASE_BASE / "run" / "real" / "ibkr-one",
-    "real2-ibkr": HASE_BASE / "run" / "real" / "ibkr-two",
-}
+def _get_hase_base() -> Path:
+    """Hase-Basisverzeichnis: EULE_HASE_DIR env-var oder ~/fin/hase als Fallback."""
+    return Path(os.environ.get("EULE_HASE_DIR", Path.home() / "fin" / "hase"))
+
+
+def _build_env_dirs() -> dict[str, Path]:
+    base = _get_hase_base()
+    return {
+        "real-ibkr": base / "run" / "real" / "ibkr-one",
+        "real2-ibkr": base / "run" / "real" / "ibkr-two",
+    }
+
+
+# Lazy property — wird bei erstem Zugriff aufgebaut
+ENV_DIRS: dict[str, Path] = _build_env_dirs()
 
 
 def _load_env_file(env_dir: Path) -> dict[str, str | None]:

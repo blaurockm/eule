@@ -2,9 +2,9 @@
 
 ## Bugs (Phase 0)
 
-- [ ] **Roundtrip-Erkennung unvollständig** — Nur 3 von 4 Roundtrips erkannt für real-ibkr. Trades vom 23.03 und 30.03 (spx-0dte-mon-put) landen als "open" statt als geschlossene Roundtrips. Die Matching-Logik greift nicht korrekt wenn nach einer Expiry (buy, price=0) am selben Tag ein neuer sell (neuer Zyklus-Start, price=0, kein trade_ref) kommt — das wird fälschlich als weiterer offener Trade gewertet.
-- [ ] **Multiplier nicht berücksichtigt** — Optionen haben einen ×100 Multiplier. Der erste Trade (02.03) zeigt `entry_value: 2.45` statt `$245.00`. Ab dem 16.03 stimmt der Wert (`value: 235.00`), vermutlich weil Hase den Bug gefixt hat — Eule sollte trotzdem den Multiplier kennen und ggf. korrigieren.
-- [ ] **HASE_BASE hardcoded** — `db.py` hat `Path.home() / "hase"` hardcoded. Sollte konfigurierbar sein (env var `EULE_HASE_DIR` oder config file), damit es auf Tower (`~/fin/hase`) und systematic (`~/hase`) funktioniert.
+- [x] **Roundtrip-Erkennung unvollständig** — Synthetische Sells (price=0, trade_ref=None) aus Hase-Rollovers gefiltert. FIFO-Matching funktioniert jetzt korrekt.
+- [x] **Multiplier nicht berücksichtigt** — `fix_option_multiplier()` erkennt und korrigiert fehlenden ×100 Multiplier bei OPT/OptionContract Trades.
+- [x] **HASE_BASE hardcoded** — Konfigurierbar via `EULE_HASE_DIR` env-var, Fallback `~/fin/hase`.
 
 ## Phase 1 — Positions + Monitor
 

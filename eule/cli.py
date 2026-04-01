@@ -104,31 +104,27 @@ def trades(
 
     # Roundtrips-Tabelle
     if roundtrips:
-        table = Table(title=f"Roundtrips ({len(roundtrips)})")
-        table.add_column("Strategie", style="cyan")
-        table.add_column("Symbol", style="cyan")
-        table.add_column("Entry", style="green")
-        table.add_column("Exit", style="red")
+        table = Table(title=f"Roundtrips ({len(roundtrips)})", show_lines=False, pad_edge=False)
+        table.add_column("Strategie", style="cyan", no_wrap=True)
+        table.add_column("Entry", style="green", no_wrap=True)
+        table.add_column("Exit", style="red", no_wrap=True)
         table.add_column("Tage", justify="right")
-        table.add_column("Entry $", justify="right")
-        table.add_column("Exit $", justify="right")
-        table.add_column("P&L", justify="right")
-        table.add_column("P&L %", justify="right")
+        table.add_column("Entry $", justify="right", no_wrap=True)
+        table.add_column("P&L $", justify="right", no_wrap=True)
+        table.add_column("%", justify="right", no_wrap=True)
         table.add_column("Typ", style="dim")
 
         for r in roundtrips:
             pnl_style = "green" if r.pnl >= 0 else "red"
-            exit_type = "EXPIRY" if r.exit_is_expiry else "CLOSE"
+            exit_type = "EXP" if r.exit_is_expiry else "CLS"
             table.add_row(
                 r.strategy_key,
-                r.symbol,
-                r.entry_date.isoformat(),
-                r.exit_date.isoformat(),
+                r.entry_date.strftime("%d.%m."),
+                r.exit_date.strftime("%d.%m."),
                 str(r.holding_days),
                 f"{r.entry_value:.2f}",
-                f"{r.exit_value:.2f}",
-                f"[{pnl_style}]{r.pnl:.2f}[/{pnl_style}]",
-                f"[{pnl_style}]{r.pnl_percent:.1f}%[/{pnl_style}]",
+                f"[{pnl_style}]{r.pnl:+.2f}[/{pnl_style}]",
+                f"[{pnl_style}]{r.pnl_percent:+.1f}%[/{pnl_style}]",
                 exit_type,
             )
 
@@ -147,21 +143,17 @@ def trades(
     # Offene Positionen
     if show_open and open_positions:
         console.print(f"\n⏳ [bold]Offene Positionen ({len(open_positions)})[/bold]")
-        open_table = Table()
-        open_table.add_column("Strategie", style="cyan")
-        open_table.add_column("Symbol", style="cyan")
-        open_table.add_column("Entry", style="green")
-        open_table.add_column("Side")
+        open_table = Table(show_lines=False, pad_edge=False)
+        open_table.add_column("Strategie", style="cyan", no_wrap=True)
+        open_table.add_column("Entry", style="green", no_wrap=True)
         open_table.add_column("Qty", justify="right")
-        open_table.add_column("Price", justify="right")
-        open_table.add_column("Value", justify="right")
+        open_table.add_column("Price", justify="right", no_wrap=True)
+        open_table.add_column("Value", justify="right", no_wrap=True)
 
         for t in open_positions:
             open_table.add_row(
                 t.strategy_key,
-                t.symbol,
-                t.date.isoformat(),
-                t.side,
+                t.date.strftime("%d.%m."),
                 f"{t.qty:.0f}",
                 f"{t.price:.4f}",
                 f"{t.value:.2f}",

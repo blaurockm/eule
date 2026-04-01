@@ -3,7 +3,7 @@
 from datetime import date, datetime, timezone
 
 from eule.models import HaseTrade, Roundtrip
-from eule.trades import detect_roundtrips, get_open_trades, summarize_roundtrips
+from eule.trades import OPTION_MULTIPLIER, detect_roundtrips, fix_option_multiplier, get_open_trades, summarize_roundtrips
 
 
 def _make_trade(
@@ -64,6 +64,23 @@ class TestHaseTradeModel:
         assert d["is_expiry"] is False
         assert "ts" in d
         assert "date" in d
+
+
+class TestHaseTradeSyntheticSell:
+    def test_synthetic_sell(self):
+        """sell mit price=0 und trade_ref=None ist ein synthetischer Rollover-Sell."""
+        t = _make_trade("2025-03-16T22:30:00", "sell", 0.0, 0.0, trade_ref=None)
+        assert t.is_synthetic_sell is True
+
+    def test_real_sell_not_synthetic(self):
+        """sell mit trade_ref ist kein synthetischer Sell."""
+        t = _make_trade("2025-03-16T15:00:00", "sell", 2.35, 235.0, trade_ref="ref-1")
+        assert t.is_synthetic_sell is False
+
+    def test_buy_not_synthetic_sell(self):
+        """buy ist kein synthetischer Sell (auch bei price=0)."""
+        t = _make_trade("2025-03-16T22:30:00", "buy", 0.0, 0.0, trade_ref=None)
+        assert t.is_synthetic_sell is False
 
 
 class TestRoundtripDetection:
@@ -159,6 +176,62 @@ class TestRoundtripDetection:
         ]
         assert detect_roundtrips(trades) == []
 
+    def test_real_db_sequence(self):
+        """Reale Sequenz aus DB: FIFO + Synthetic-Inferenz ergibt 4 Roundtrips."""
+        trades = [
+            # Cycle 1: sell (entry)
+            _make_trade("2025-03-02T16:00:00", "sell", 2.45, 245.0, trade_ref="ref-1"),
+            # Cycle 2: sell -> expiry of cycle 1 -> synthetic sell
+            _make_trade("2025-03-16T15:00:00", "sell", 2.35, 235.0, trade_ref="ref-2"),
+            _make_trade("2025-03-16T22:30:00", "buy", 0.0, 0.0, trade_ref=None, fees=0.0),
+            _make_trade("2025-03-16T22:30:00", "sell", 0.0, 0.0, trade_ref=None, fees=0.0),
+            # Cycle 3: sell -> expiry of cycle 2 -> synthetic sell
+            _make_trade("2025-03-23T15:00:00", "sell", 2.425, 242.5, trade_ref="ref-3"),
+            _make_trade("2025-03-23T22:30:00", "buy", 0.0, 0.0, trade_ref=None, fees=0.0),
+            _make_trade("2025-03-23T22:30:00", "sell", 0.0, 0.0, trade_ref=None, fees=0.0),
+            # Cycle 4: sell + synthetic sell (expiry-buy fehlt in DB)
+            _make_trade("2025-03-30T16:00:00", "sell", 2.525, 252.5, trade_ref="ref-4"),
+            _make_trade("2025-03-30T22:30:00", "sell", 0.0, 0.0, trade_ref=None, fees=0.0),
+        ]
+        rts = detect_roundtrips(trades)
+
+        assert len(rts) == 4
+        # FIFO: sell1(03-02) -> buy(03-16), sell2(03-16) -> buy(03-23)
+        assert rts[0].entry_price == 2.45
+        assert rts[0].exit_is_expiry is True
+        assert rts[1].entry_price == 2.35
+        assert rts[1].exit_is_expiry is True
+        # Inferenz: sell3(03-23) + synthetic(03-23) -> inferred expiry
+        assert rts[2].entry_price == 2.425
+        assert rts[2].exit_is_expiry is True
+        assert rts[2].exit_price == 0.0
+        # Inferenz: sell4(03-30) + synthetic(03-30) -> inferred expiry
+        assert rts[3].entry_price == 2.525
+        assert rts[3].exit_is_expiry is True
+
+    def test_synthetic_sells_not_open(self):
+        """Ungematchte Sells mit Synthetic am selben Tag sind NICHT offen."""
+        trades = [
+            _make_trade("2025-03-02T16:00:00", "sell", 2.45, 245.0, trade_ref="ref-1"),
+            _make_trade("2025-03-16T22:30:00", "buy", 0.0, 0.0, trade_ref=None, fees=0.0),
+            _make_trade("2025-03-16T22:30:00", "sell", 0.0, 0.0, trade_ref=None, fees=0.0),
+            _make_trade("2025-03-30T16:00:00", "sell", 2.525, 252.5, trade_ref="ref-4"),
+            _make_trade("2025-03-30T22:30:00", "sell", 0.0, 0.0, trade_ref=None, fees=0.0),
+        ]
+        open_trades = get_open_trades(trades)
+
+        # sell1 matched via FIFO mit buy, sell4 inferred via synthetic -> keine offenen
+        assert len(open_trades) == 0
+
+    def test_truly_open_without_synthetic(self):
+        """Sell ohne Buy UND ohne Synthetic am selben Tag ist wirklich offen."""
+        trades = [
+            _make_trade("2025-03-30T16:00:00", "sell", 2.525, 252.5, trade_ref="ref-4"),
+        ]
+        open_trades = get_open_trades(trades)
+        assert len(open_trades) == 1
+        assert open_trades[0].trade_ref == "ref-4"
+
 
 class TestOpenTrades:
     def test_all_closed(self):
@@ -219,6 +292,33 @@ class TestRoundtripPnL:
         ]
         rts = detect_roundtrips(trades)
         assert rts[0].pnl_percent == 50.0  # (300-150)/300 * 100
+
+
+class TestMultiplierFix:
+    def test_missing_multiplier_corrected(self):
+        """OPT mit value=qty*price (ohne ×100) wird korrigiert."""
+        # value=2.45 statt 245.00 (qty=1, price=2.45)
+        assert abs(fix_option_multiplier("OPT", 1.0, 2.45, 2.45) - 245.0) < 0.01
+
+    def test_correct_multiplier_untouched(self):
+        """OPT mit bereits korrekt angewendetem Multiplier bleibt unveraendert."""
+        assert fix_option_multiplier("OPT", 1.0, 2.35, 235.0) == 235.0
+
+    def test_expiry_zero_untouched(self):
+        """Expiry-Trades (price=0, value=0) werden nicht veraendert."""
+        assert fix_option_multiplier("OPT", 1.0, 0.0, 0.0) == 0.0
+
+    def test_non_option_untouched(self):
+        """Nicht-Options (STK) werden nicht veraendert."""
+        assert fix_option_multiplier("STK", 1.0, 100.0, 100.0) == 100.0
+
+    def test_multiple_qty(self):
+        """Mehrere Kontrakte: value=qty*price*100."""
+        assert fix_option_multiplier("OPT", 2.0, 3.00, 6.00) == 600.0
+
+    def test_option_contract_class_name(self):
+        """OptionContract (Hase class name) wird auch erkannt."""
+        assert abs(fix_option_multiplier("OptionContract", 1.0, 2.45, 2.45) - 245.0) < 0.01
 
 
 class TestSummary:

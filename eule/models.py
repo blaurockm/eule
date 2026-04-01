@@ -28,11 +28,17 @@ class HaseTrade:
         """Synthetischer Trade von expire_options(): buy mit price=0, kein trade_ref."""
         return self.side == "buy" and self.price == 0.0 and self.trade_ref is None
 
+    @property
+    def is_synthetic_sell(self) -> bool:
+        """Synthetischer Rollover-Sell von Hase: sell mit price=0, kein trade_ref."""
+        return self.side == "sell" and self.price == 0.0 and self.trade_ref is None
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["ts"] = self.ts.isoformat()
         d["date"] = self.date.isoformat()
         d["is_expiry"] = self.is_expiry
+        d["is_synthetic_sell"] = self.is_synthetic_sell
         return d
 
 
