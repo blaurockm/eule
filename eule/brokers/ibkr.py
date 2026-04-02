@@ -16,16 +16,22 @@ from eule.brokers import BrokerAdapter
 from eule.config import BrokerConfig, ConfigError
 from eule.models import AccountSummary, OptionPosition, Position
 
+# WICHTIG: ibind liest Env-Vars beim Import und cached sie auf Modul-Ebene.
+# Deshalb: Env-Vars ZUERST setzen, DANN ibind importieren.
+# Siehe Hase CLAUDE.md: "BrokerIBKR import MUST happen AFTER loading env vars"
+_ibind_imported = False
+
 
 def _set_ibind_env(env: dict[str, str | None]) -> None:
-    """Setzt IBIND-Env-Vars aus .env dict in os.environ.
-
-    ibind liest OAuth-Credentials lazy bei API-Calls, nicht bei __init__.
-    Die Env-Vars muessen deshalb gesetzt bleiben solange der Client lebt.
-    """
+    """Setzt IBIND-Env-Vars und importiert ibind (beim ersten Aufruf)."""
+    global _ibind_imported
     for key, val in env.items():
         if key and key.startswith("IBIND") and val is not None:
             os.environ[key] = val
+
+    if not _ibind_imported:
+        import ibind  # noqa: F401 — Modul-Level-Init liest jetzt die gesetzten Vars
+        _ibind_imported = True
 
 
 class IbkrAdapter(BrokerAdapter):
@@ -41,14 +47,12 @@ class IbkrAdapter(BrokerAdapter):
         self._client = None
 
     def _get_client(self):
+        # Env-Vars immer setzen (vor jedem Zugriff, falls anderer Adapter sie ueberschrieben hat)
+        _set_ibind_env(self._env)
         if self._client is None:
             from ibind import IbkrClient
-            _set_ibind_env(self._env)
             use_oauth = str(self._env.get("IBIND_USE_OAUTH", "false")).lower() in ("1", "true", "yes", "on")
             self._client = IbkrClient(use_oauth=use_oauth, auto_register_shutdown=False)
-        else:
-            # Env-Vars erneut setzen (falls anderer Adapter sie ueberschrieben hat)
-            _set_ibind_env(self._env)
         return self._client
 
     def _fetch_positions_raw(self) -> list[Position]:
