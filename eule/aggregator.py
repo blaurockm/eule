@@ -42,6 +42,7 @@ def aggregate_positions(cfg: EuleConfig) -> PortfolioSnapshot:
     ibkr_client = None
     quote_ticker_map: dict[str, str] = {}  # ticker → yfinance-Ticker
     price_transforms: dict[str, str] = {}  # ticker → Transformation (z.B. "oz_to_gram")
+    isin_map: dict[str, str] = {}  # ticker → ISIN (fuer Bond-Quotes)
 
     # Adapter erstellen und Positionen laden
     for name, broker_cfg in cfg.brokers.items():
@@ -63,12 +64,33 @@ def aggregate_positions(cfg: EuleConfig) -> PortfolioSnapshot:
 
         positions, errors = adapter.fetch_positions()
 
-        # quote_ticker und price_transform von ManualAdaptern sammeln (NACH fetch)
+        # quote_ticker, price_transform, isin von ManualAdaptern sammeln (NACH fetch)
         if isinstance(adapter, ManualAdapter):
             quote_ticker_map.update(adapter.quote_ticker_map)
             price_transforms.update(adapter.price_transform)
+            isin_map.update(adapter.isin_map)
         all_positions.extend(positions)
         all_errors.extend(errors)
+
+    # Bond-Kurse via ISIN (IBKR) — Preis in % vom Nennwert
+    if isin_map and ibkr_client:
+        from eule.quotes import fetch_bond_quotes_ibkr
+        bond_quotes = fetch_bond_quotes_ibkr(isin_map, ibkr_client)
+        updated = []
+        for p in all_positions:
+            if p.ticker in bond_quotes and bond_quotes[p.ticker] is not None:
+                price_pct = bond_quotes[p.ticker]
+                # Bond-Preis: % vom Nennwert → aktueller Wert
+                from eule.models import BondPosition
+                if isinstance(p, BondPosition) and p.face_value > 0:
+                    mv = p.face_value * price_pct / 100.0
+                    pnl = mv - (p.face_value * p.entry_price / 100.0)
+                    updated.append(replace(p, current_price=price_pct, market_value=mv, unrealized_pnl=pnl))
+                else:
+                    updated.append(replace(p, current_price=price_pct))
+            else:
+                updated.append(p)
+        all_positions = updated
 
     # Live-Kurse fuer Positionen ohne current_price
     tickers_needing_quotes = [

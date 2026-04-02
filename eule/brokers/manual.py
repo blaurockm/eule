@@ -26,6 +26,8 @@ class ManualAdapter(BrokerAdapter):
         self.quote_ticker_map: dict[str, str] = {}
         # Mapping: ticker → price_unit (z.B. "oz_to_gram" fuer Gold)
         self.price_transform: dict[str, str] = {}
+        # Mapping: ticker → ISIN (fuer Bond-Abfrage via IBKR)
+        self.isin_map: dict[str, str] = {}
 
         if not self._positions_file:
             raise ConfigError(f"{self.name}: positions_file nicht konfiguriert")
@@ -66,6 +68,10 @@ class ManualAdapter(BrokerAdapter):
             price_transform = raw.get("price_transform", "")
             if price_transform:
                 self.price_transform[raw.get("ticker", "")] = price_transform
+            # ISIN: fuer Bond-Kurs-Abfrage via IBKR
+            isin = raw.get("isin", "")
+            if isin:
+                self.isin_map[raw.get("ticker", "")] = isin
 
             base_kwargs = dict(
                 broker=self.name,
