@@ -55,7 +55,7 @@ def aggregate_positions(cfg: EuleConfig) -> PortfolioSnapshot:
             all_errors.append(str(e))
             continue
 
-        # ibind Client merken fuer Quotes
+        # ibind Client merken fuer Quotes + Cash-Positionen
         if isinstance(adapter, IbkrAdapter):
             try:
                 ibkr_client = adapter.get_client()
@@ -63,6 +63,11 @@ def aggregate_positions(cfg: EuleConfig) -> PortfolioSnapshot:
                 pass
 
         positions, errors = adapter.fetch_positions()
+
+        # Cash-Positionen von API-Brokern
+        if isinstance(adapter, IbkrAdapter):
+            cash_positions = adapter.fetch_cash_positions()
+            positions.extend(cash_positions)
 
         # quote_ticker, price_transform, isin von ManualAdaptern sammeln (NACH fetch)
         if isinstance(adapter, ManualAdapter):

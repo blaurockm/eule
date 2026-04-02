@@ -186,6 +186,46 @@ class IbkrAdapter(BrokerAdapter):
             buying_power=buying_power,
         )
 
+    def fetch_cash_positions(self) -> list[Position]:
+        """Holt Cash-Positionen pro Waehrung via Ledger-API."""
+        try:
+            client = self._get_client()
+            client.portfolio_accounts()
+            resp = client.get(f"portfolio/{self._account_id}/ledger", log=False)
+            if not resp or not resp.data:
+                return []
+
+            positions: list[Position] = []
+            for ccy, vals in resp.data.items():
+                if ccy == "BASE":
+                    continue  # Aggregiert, nicht doppelt zaehlen
+                cash = float(vals.get("cashbalance", 0))
+                if abs(cash) < 0.01:
+                    continue
+                positions.append(Position(
+                    broker=self.name,
+                    ticker=f"CASH_{ccy}",
+                    name=f"Cash {ccy}",
+                    asset_type="cash",
+                    direction="long",
+                    size=cash,
+                    entry_price=1.0,
+                    entry_date=None,
+                    current_price=1.0,
+                    currency=ccy,
+                    unrealized_pnl=0.0,
+                    unrealized_pnl_eur=None,
+                    category="cash",
+                    market_value=abs(cash),
+                    market_value_eur=None,
+                    pct_of_portfolio=None,
+                ))
+            logger.debug(f"[{self.name}] {len(positions)} Cash-Positionen geladen")
+            return positions
+        except Exception as e:
+            logger.warning(f"[{self.name}] Cash-Positionen fehlgeschlagen: {e}")
+            return []
+
     def get_client(self):
         """Gibt den ibind Client zurueck (fuer Quotes)."""
         return self._get_client()

@@ -42,9 +42,42 @@ class ManualAdapter(BrokerAdapter):
 
         return data.get("positions", [])
 
+    def _load_cash(self) -> list[dict]:
+        path = Path(self._positions_file).expanduser()
+        if not path.exists():
+            return []
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+        return data.get("cash", [])
+
     def _fetch_positions_raw(self) -> list[Position]:
         raw_positions = self._load_yaml()
         positions: list[Position] = []
+
+        # Cash-Positionen aus YAML
+        for raw_cash in self._load_cash():
+            currency = raw_cash.get("currency", "EUR")
+            amount = float(raw_cash.get("amount", 0))
+            if abs(amount) < 0.01:
+                continue
+            positions.append(Position(
+                broker=self.name,
+                ticker=f"CASH_{currency}",
+                name=raw_cash.get("name", f"Cash {currency}"),
+                asset_type="cash",
+                direction="long",
+                size=amount,
+                entry_price=1.0,
+                entry_date=None,
+                current_price=1.0,
+                currency=currency,
+                unrealized_pnl=0.0,
+                unrealized_pnl_eur=None,
+                category="cash",
+                market_value=abs(amount),
+                market_value_eur=None,
+                pct_of_portfolio=None,
+            ))
 
         for raw in raw_positions:
             asset_type = raw.get("asset_type", "stock")
