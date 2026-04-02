@@ -4,6 +4,7 @@ Datenmodelle fuer Eule.
 
 from dataclasses import dataclass, asdict
 from datetime import date, datetime
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -110,4 +111,114 @@ class Roundtrip:
             "pnl": round(self.pnl, 2),
             "pnl_percent": round(self.pnl_percent, 2),
             "total_fees": round(self.total_fees, 2),
+        }
+
+
+# ──────────────────────────────────────────────────
+# Phase 1 — Positions
+# ──────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class AccountSummary:
+    """Kontouebersicht eines Brokers."""
+
+    broker: str
+    cash: float
+    equity: float
+    currency: str
+    buying_power: float | None = None
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        return {k: v for k, v in d.items() if v is not None}
+
+
+@dataclass(frozen=True)
+class Position:
+    """Eine offene Position bei einem Broker."""
+
+    broker: str
+    ticker: str
+    name: str
+    asset_type: str  # stock, etf, option, bond, gold_physical, gold_etc
+    direction: str  # long, short
+    size: float
+    entry_price: float
+    entry_date: date | None
+    current_price: float | None
+    currency: str
+    unrealized_pnl: float | None
+    unrealized_pnl_eur: float | None
+    category: str  # core, opportunistic, gold, bonds
+    market_value: float | None
+    market_value_eur: float | None
+    pct_of_portfolio: float | None  # vom Aggregator gesetzt via replace()
+
+    def to_dict(self) -> dict:
+        d: dict[str, Any] = {}
+        for field_name in self.__dataclass_fields__:
+            val = getattr(self, field_name)
+            if isinstance(val, (date, datetime)):
+                d[field_name] = val.isoformat()
+            elif isinstance(val, float) and val is not None:
+                d[field_name] = round(val, 4)
+            else:
+                d[field_name] = val
+        return d
+
+
+@dataclass(frozen=True)
+class OptionPosition(Position):
+    """Option-Position mit zusaetzlichen Feldern."""
+
+    underlying: str = ""
+    strike: float = 0.0
+    expiry: date | None = None
+    option_type: str = ""  # call, put
+    sold_premium: float = 0.0
+    current_value: float = 0.0
+    pnl_percent: float = 0.0
+    fifty_pct_target: float = 0.0
+    days_to_expiry: int = 0
+
+
+@dataclass(frozen=True)
+class BondPosition(Position):
+    """Anleihe-Position mit Kupon- und Faelligkeitsdaten."""
+
+    issuer: str = ""
+    coupon_rate: float = 0.0
+    coupon_frequency: str = "annual"  # annual, semi-annual, quarterly
+    maturity_date: date | None = None
+    face_value: float = 0.0
+    credit_rating: str = ""
+    next_coupon_date: date | None = None
+    annual_income: float = 0.0
+    days_to_maturity: int = 0
+
+
+@dataclass(frozen=True)
+class PortfolioSnapshot:
+    """Aggregiertes Portfolio ueber alle Broker."""
+
+    positions: list[Position]
+    total_value_eur: float
+    broker_totals: dict[str, float]
+    category_totals: dict[str, float]
+    category_pcts: dict[str, float]
+    timestamp: str
+    fx_rates: dict[str, float]
+    errors: list[str]
+
+    def to_dict(self) -> dict:
+        return {
+            "total_value_eur": round(self.total_value_eur, 2),
+            "broker_totals": {k: round(v, 2) for k, v in self.broker_totals.items()},
+            "category_totals": {k: round(v, 2) for k, v in self.category_totals.items()},
+            "category_pcts": {k: round(v, 4) for k, v in self.category_pcts.items()},
+            "fx_rates": self.fx_rates,
+            "positions": [p.to_dict() for p in self.positions],
+            "errors": self.errors,
+            "timestamp": self.timestamp,
         }

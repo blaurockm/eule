@@ -8,16 +8,17 @@
 
 ## Phase 1 — Positions + Monitor
 
-- [ ] Config-System (TOML oder YAML) für Credentials, Pfade, manuelle Positionen
-- [ ] IBKR Positions-Abfrage (via Hase API localhost:8767/debug/positions)
-- [ ] Tradier Positions-Abfrage (REST API)
-- [ ] Manuelle Positionen (Trade Republic, Willbe Gold)
-- [ ] Positions-Aggregator + `eule positions`
-- [ ] Options-Tracker + `eule options` (50%-Regel, Verfall, Roll)
-- [ ] Bond-Tracker (Kupon, Fälligkeit, Rating)
-- [ ] Allocation-Checker + `eule allocation`
-- [ ] Monitor/Briefing + `eule briefing`
-- [ ] Thesis-Checker + `eule thesis`
+- [x] Config-System (YAML) — `~/.eule/config.yaml` + `.env`-Dateien pro Broker
+- [x] IBKR Positions-Abfrage (direkt via ibind, Client Portal API)
+- [x] Tradier Positions-Abfrage (REST API via httpx)
+- [x] IG Positions-Abfrage (trading_ig REST API)
+- [x] Manuelle Positionen (Trade Republic, Willbe Gold) — separate YAML-Dateien
+- [x] Positions-Aggregator + `eule positions` (FX-Konvertierung, Live-Kurse)
+- [x] Options-Tracker + `eule options` (50%-Regel, DTE-Warnungen)
+- [x] Bond-Tracker (Kupon-Berechnung, Fälligkeits-Warnungen)
+- [x] Allocation-Checker + `eule allocation` (Soll/Ist, Konzentrations-Warnung)
+- [x] Monitor/Briefing + `eule briefing` (Gesamt-Summary)
+- [x] Thesis-Checker + `eule thesis` (positions-bh.md parsen, Exit-Kriterien)
 
 ## Phase 2 — Trade Journal
 

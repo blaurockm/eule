@@ -1,0 +1,50 @@
+[
+  {
+    "acctId": "U20724384",
+    "conid": 265598,
+    "contractDesc": "AAPL    APPLE INC",
+    "description": "AAPL APPLE INC",
+    "position": 100.0,
+    "mktPrice": 175.50,
+    "mktValue": 17550.0,
+    "marketValue": 17550.0,
+    "currency": "USD",
+    "avgCost": 150.25,
+    "avgPrice": 150.25,
+    "realizedPnl": 0.0,
+    "unrealizedPnl": 2525.0,
+    "assetClass": "STK"
+  },
+  {
+    "acctId": "U20724384",
+    "conid": 834873916,
+    "contractDesc": "SPX    MAR2025 5465 P [SPXW  250307P05465000 100]",
+    "description": "SPX MAR2025 5465 P",
+    "position": -1.0,
+    "mktPrice": 1.20,
+    "mktValue": -120.0,
+    "marketValue": 120.0,
+    "currency": "USD",
+    "avgCost": 245.0,
+    "avgPrice": 2.45,
+    "realizedPnl": 0.0,
+    "unrealizedPnl": 125.0,
+    "assetClass": "OPT",
+    "strike": 5465.0,
+    "putOrCall": "P",
+    "expiry": "2025-03-07"
+  },
+  {
+    "acctId": "U20724384",
+    "conid": 0,
+    "contractDesc": "CLOSED",
+    "description": "CLOSED",
+    "position": 0,
+    "mktPrice": 0,
+    "mktValue": 0,
+    "marketValue": 0,
+    "currency": "USD",
+    "avgPrice": 0,
+    "assetClass": "STK"
+  }
+]

@@ -11,6 +11,12 @@ dependencies = [
     "psycopg[binary]>=3.2.0",
     "python-dotenv>=1.1.0",
     "rich>=14.0.0",
+    "loguru>=0.7.0",
+    "httpx>=0.28.0",
+    "pyyaml>=6.0",
+    "ibind[oauth]>=0.1.21",
+    "trading-ig>=0.0.23",
+    "yfinance>=0.2.55",
 ]
 
 [project.scripts]
