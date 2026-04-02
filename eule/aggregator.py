@@ -61,12 +61,12 @@ def aggregate_positions(cfg: EuleConfig) -> PortfolioSnapshot:
             except Exception:
                 pass
 
-        # quote_ticker und price_transform von ManualAdaptern sammeln
+        positions, errors = adapter.fetch_positions()
+
+        # quote_ticker und price_transform von ManualAdaptern sammeln (NACH fetch)
         if isinstance(adapter, ManualAdapter):
             quote_ticker_map.update(adapter.quote_ticker_map)
             price_transforms.update(adapter.price_transform)
-
-        positions, errors = adapter.fetch_positions()
         all_positions.extend(positions)
         all_errors.extend(errors)
 

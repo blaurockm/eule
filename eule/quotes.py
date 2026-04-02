@@ -95,10 +95,13 @@ def fetch_quotes_yfinance(tickers: list[str]) -> dict[str, float | None]:
         for ticker in tickers:
             try:
                 if len(tickers) == 1:
-                    close = data["Close"].iloc[-1]
+                    series = data["Close"].dropna()
                 else:
-                    close = data["Close"][ticker].iloc[-1]
-                results[ticker] = float(close) if close == close else None  # NaN check
+                    series = data["Close"][ticker].dropna()
+                if len(series) > 0:
+                    results[ticker] = float(series.iloc[-1])
+                else:
+                    results[ticker] = None
             except (KeyError, IndexError):
                 results[ticker] = None
 
