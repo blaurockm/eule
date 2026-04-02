@@ -140,20 +140,21 @@ def fetch_quotes_yfinance(tickers: list[str]) -> dict[str, float | None]:
     return results
 
 
-def fetch_bond_quotes_ibkr(
+def fetch_quotes_ibkr_by_isin(
     isin_map: dict[str, str],
     ibkr_client,
 ) -> dict[str, float | None]:
-    """Holt Bond-Kurse via IBKR ISIN-Suche.
+    """Holt Kurse via IBKR ISIN-Suche.
 
-    Bond-Preise sind in % vom Nennwert (z.B. 39.03 = 39.03% of par).
+    Funktioniert fuer Bonds, Aktien, ETFs — alles was eine ISIN hat.
+    Achtung: Bei Bonds ist der Preis in % vom Nennwert (z.B. 39.03).
 
     Args:
         isin_map: {ticker: ISIN}
         ibkr_client: ibind IbkrClient
 
     Returns:
-        {ticker: price_pct} — Preis in % vom Nennwert, None wenn nicht gefunden
+        {ticker: price} — None wenn nicht gefunden
     """
     results: dict[str, float | None] = {}
 
@@ -161,7 +162,7 @@ def fetch_bond_quotes_ibkr(
         try:
             search_res = ibkr_client.search_contract_by_symbol(isin)
             if not hasattr(search_res, "data") or not search_res.data:
-                logger.debug(f"IBKR Bond: Kein Ergebnis fuer ISIN {isin}")
+                logger.debug(f"IBKR ISIN: Kein Ergebnis fuer {isin} ({ticker})")
                 results[ticker] = None
                 continue
 
@@ -183,10 +184,10 @@ def fetch_bond_quotes_ibkr(
 
             results[ticker] = price
             if price is not None:
-                logger.debug(f"IBKR Bond {ticker} (ISIN {isin}): {price}%")
+                logger.debug(f"IBKR ISIN {ticker} ({isin}): {price}")
 
         except Exception as e:
-            logger.debug(f"IBKR Bond {ticker} fehlgeschlagen: {e}")
+            logger.debug(f"IBKR ISIN {ticker} fehlgeschlagen: {e}")
             results[ticker] = None
 
     return results

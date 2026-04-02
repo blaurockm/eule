@@ -72,22 +72,25 @@ def aggregate_positions(cfg: EuleConfig) -> PortfolioSnapshot:
         all_positions.extend(positions)
         all_errors.extend(errors)
 
-    # Bond-Kurse via ISIN (IBKR) — Preis in % vom Nennwert
+    # ISIN-basierte Kurse (IBKR) — Bonds, ETFs, Aktien mit ISIN
     if isin_map and ibkr_client:
-        from eule.quotes import fetch_bond_quotes_ibkr
-        bond_quotes = fetch_bond_quotes_ibkr(isin_map, ibkr_client)
+        from eule.quotes import fetch_quotes_ibkr_by_isin
+        isin_quotes = fetch_quotes_ibkr_by_isin(isin_map, ibkr_client)
         updated = []
         for p in all_positions:
-            if p.ticker in bond_quotes and bond_quotes[p.ticker] is not None:
-                price_pct = bond_quotes[p.ticker]
-                # Bond-Preis: % vom Nennwert → aktueller Wert
+            if p.ticker in isin_quotes and isin_quotes[p.ticker] is not None:
+                price = isin_quotes[p.ticker]
                 from eule.models import BondPosition
                 if isinstance(p, BondPosition) and p.face_value > 0:
-                    mv = p.face_value * price_pct / 100.0
+                    # Bond-Preis: % vom Nennwert → aktueller Wert
+                    mv = p.face_value * price / 100.0
                     pnl = mv - (p.face_value * p.entry_price / 100.0)
-                    updated.append(replace(p, current_price=price_pct, market_value=mv, unrealized_pnl=pnl))
+                    updated.append(replace(p, current_price=price, market_value=mv, unrealized_pnl=pnl))
                 else:
-                    updated.append(replace(p, current_price=price_pct))
+                    # ETF/Aktie: Preis ist absolut
+                    mv = abs(p.size * price)
+                    pnl = (price - p.entry_price) * p.size if p.entry_price else None
+                    updated.append(replace(p, current_price=price, market_value=mv, unrealized_pnl=pnl))
             else:
                 updated.append(p)
         all_positions = updated
