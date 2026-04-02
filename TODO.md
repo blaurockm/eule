@@ -20,6 +20,12 @@
 - [x] Monitor/Briefing + `eule briefing` (Gesamt-Summary)
 - [x] Thesis-Checker + `eule thesis` (positions-bh.md parsen, Exit-Kriterien)
 
+## Offen
+
+- [ ] **ibkr-two (LYNX)** — ibind kann nur eine Connection pro Prozess. Braucht separaten Aufruf oder Subprocess-Isolation.
+- [ ] **EXSA.DE Entry-Preis** — €280.25 passt nicht zum aktuellen Kurs ~€58. Aktiensplit oder falsche Share Class pruefen.
+- [ ] **Bond Live-Kurse** — Aktuell manuell in YAML. Perspektivisch: Boerse Frankfurt API oder aehnlich.
+
 ## Phase 2 — Trade Journal
 
 - [ ] Multi-Broker Trade-Import (IBKR Flex Queries, Tradier, IG, Crypto)

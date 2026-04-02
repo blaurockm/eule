@@ -22,6 +22,10 @@ class ManualAdapter(BrokerAdapter):
         self.name = config.name
         self._config = config
         self._positions_file = config.positions_file
+        # Mapping: ticker → quote_ticker (fuer yfinance-Abfrage)
+        self.quote_ticker_map: dict[str, str] = {}
+        # Mapping: ticker → price_unit (z.B. "oz_to_gram" fuer Gold)
+        self.price_transform: dict[str, str] = {}
 
         if not self._positions_file:
             raise ConfigError(f"{self.name}: positions_file nicht konfiguriert")
@@ -50,6 +54,19 @@ class ManualAdapter(BrokerAdapter):
                 except ValueError:
                     pass
 
+            # current_price direkt aus YAML (fuer Bonds, Gold ohne Markt-Ticker)
+            current_price_raw = raw.get("current_price")
+            current_price = float(current_price_raw) if current_price_raw is not None else None
+
+            # quote_ticker: alternativer Ticker fuer Live-Kurs-Abfrage
+            quote_ticker = raw.get("quote_ticker", "")
+            if quote_ticker:
+                self.quote_ticker_map[raw.get("ticker", "")] = quote_ticker
+            # price_transform: Umrechnung (z.B. oz_to_gram fuer Gold)
+            price_transform = raw.get("price_transform", "")
+            if price_transform:
+                self.price_transform[raw.get("ticker", "")] = price_transform
+
             base_kwargs = dict(
                 broker=self.name,
                 ticker=raw.get("ticker", ""),
@@ -59,7 +76,7 @@ class ManualAdapter(BrokerAdapter):
                 size=float(raw.get("size", 0)),
                 entry_price=float(raw.get("entry_price", 0)),
                 entry_date=entry_date,
-                current_price=None,  # Wird spaeter via quotes.py gesetzt
+                current_price=current_price,
                 currency=raw.get("currency", "EUR"),
                 unrealized_pnl=None,
                 unrealized_pnl_eur=None,

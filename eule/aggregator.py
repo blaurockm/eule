@@ -40,6 +40,8 @@ def aggregate_positions(cfg: EuleConfig) -> PortfolioSnapshot:
     all_positions: list[Position] = []
     all_errors: list[str] = []
     ibkr_client = None
+    quote_ticker_map: dict[str, str] = {}  # ticker → yfinance-Ticker
+    price_transforms: dict[str, str] = {}  # ticker → Transformation (z.B. "oz_to_gram")
 
     # Adapter erstellen und Positionen laden
     for name, broker_cfg in cfg.brokers.items():
@@ -59,23 +61,40 @@ def aggregate_positions(cfg: EuleConfig) -> PortfolioSnapshot:
             except Exception:
                 pass
 
+        # quote_ticker und price_transform von ManualAdaptern sammeln
+        if isinstance(adapter, ManualAdapter):
+            quote_ticker_map.update(adapter.quote_ticker_map)
+            price_transforms.update(adapter.price_transform)
+
         positions, errors = adapter.fetch_positions()
         all_positions.extend(positions)
         all_errors.extend(errors)
 
-    # Live-Kurse fuer manuelle Positionen ohne current_price
+    # Live-Kurse fuer Positionen ohne current_price
     tickers_needing_quotes = [
         p.ticker for p in all_positions
         if p.current_price is None and p.ticker
     ]
     if tickers_needing_quotes:
-        quotes, quote_warnings = fetch_quotes(tickers_needing_quotes, ibkr_client=ibkr_client)
+        # quote_ticker_map: eigentlichen Ticker → yfinance-Ticker
+        actual_tickers = [quote_ticker_map.get(t, t) for t in tickers_needing_quotes]
+        quotes, quote_warnings = fetch_quotes(actual_tickers, ibkr_client=ibkr_client)
         all_errors.extend(quote_warnings)
+
+        # Ergebnisse zurueck auf Original-Ticker mappen
+        reverse_map = {quote_ticker_map.get(t, t): t for t in tickers_needing_quotes}
+        ticker_quotes: dict[str, float | None] = {}
+        for qt, price in quotes.items():
+            orig = reverse_map.get(qt, qt)
+            if price is not None and orig in price_transforms:
+                if price_transforms[orig] == "oz_to_gram":
+                    price = price / 31.1035  # Troy-Unze → Gramm
+            ticker_quotes[orig] = price
 
         updated = []
         for p in all_positions:
-            if p.current_price is None and p.ticker in quotes and quotes[p.ticker] is not None:
-                price = quotes[p.ticker]
+            if p.current_price is None and p.ticker in ticker_quotes and ticker_quotes[p.ticker] is not None:
+                price = ticker_quotes[p.ticker]
                 mv = abs(p.size * price)
                 pnl = (price - p.entry_price) * p.size if p.entry_price else None
                 updated.append(replace(p, current_price=price, market_value=mv, unrealized_pnl=pnl))
