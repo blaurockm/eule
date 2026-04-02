@@ -74,18 +74,18 @@ class IbkrAdapter(BrokerAdapter):
             conid = str(pos.get("conid", ""))
             size = float(pos.get("position", 0))
             asset_class = pos.get("assetClass", "STK")
-            current_price = float(pos.get("mktPrice", 0))
-            entry_price = float(pos.get("avgPrice", 0))
+            current_price = float(pos.get("marketPrice", pos.get("mktPrice", 0)))
+            entry_price = float(pos.get("avgPrice", pos.get("avgCost", 0)))
             unrealized_pnl = float(pos.get("unrealizedPnl", 0))
             currency = pos.get("currency", "USD")
-            description = pos.get("contractDesc", pos.get("description", conid))
+            description = pos.get("description", pos.get("contractDesc", conid))
 
             # Ticker aus contractDesc extrahieren (erster Teil vor Leerzeichen)
             ticker = description.split()[0] if description else conid
 
             direction = "long" if size > 0 else "short"
             abs_size = abs(size)
-            market_value = abs(float(pos.get("mktValue", 0)))
+            market_value = abs(float(pos.get("marketValue", pos.get("mktValue", 0))))
 
             if asset_class == "OPT":
                 # Option — contractDesc z.B. "SPX    DEC2025 6765 P [SPXW  251216P06765000 100]"
