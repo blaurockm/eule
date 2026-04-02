@@ -66,8 +66,31 @@ def aggregate_positions(cfg: EuleConfig) -> PortfolioSnapshot:
 
         # Cash-Positionen von API-Brokern
         if isinstance(adapter, IbkrAdapter):
+            # IBKR: Multi-Currency Cash via Ledger
             cash_positions = adapter.fetch_cash_positions()
             positions.extend(cash_positions)
+        elif not isinstance(adapter, ManualAdapter):
+            # Tradier, IG etc.: Cash aus Balance
+            balance = adapter.fetch_balance()
+            if balance and balance.cash > 0.01:
+                positions.append(Position(
+                    broker=adapter.name,
+                    ticker=f"CASH_{balance.currency}",
+                    name=f"Cash {balance.currency}",
+                    asset_type="cash",
+                    direction="long",
+                    size=balance.cash,
+                    entry_price=1.0,
+                    entry_date=None,
+                    current_price=1.0,
+                    currency=balance.currency,
+                    unrealized_pnl=0.0,
+                    unrealized_pnl_eur=None,
+                    category="cash",
+                    market_value=balance.cash,
+                    market_value_eur=None,
+                    pct_of_portfolio=None,
+                ))
 
         # quote_ticker, price_transform, isin von ManualAdaptern sammeln (NACH fetch)
         if isinstance(adapter, ManualAdapter):
