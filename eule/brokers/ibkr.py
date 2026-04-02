@@ -17,31 +17,15 @@ from eule.config import BrokerConfig, ConfigError
 from eule.models import AccountSummary, OptionPosition, Position
 
 
-def _create_ibkr_client(env: dict[str, str | None]):
-    """Erstellt einen ibind IbkrClient mit OAuth-Credentials aus env dict."""
-    from ibind import IbkrClient
+def _set_ibind_env(env: dict[str, str | None]) -> None:
+    """Setzt IBIND-Env-Vars aus .env dict in os.environ.
 
-    # ibind liest Credentials aus os.environ
-    # Wir setzen sie temporaer aus dem .env dict
-    env_backup = {}
-    keys = [k for k in env if k and k.startswith("IBIND")]
-    for key in keys:
-        env_backup[key] = os.environ.get(key)
-        val = env.get(key)
-        if val is not None:
+    ibind liest OAuth-Credentials lazy bei API-Calls, nicht bei __init__.
+    Die Env-Vars muessen deshalb gesetzt bleiben solange der Client lebt.
+    """
+    for key, val in env.items():
+        if key and key.startswith("IBIND") and val is not None:
             os.environ[key] = val
-
-    try:
-        use_oauth = str(env.get("IBIND_USE_OAUTH", "false")).lower() in ("1", "true", "yes", "on")
-        client = IbkrClient(use_oauth=use_oauth, auto_register_shutdown=False)
-        return client
-    finally:
-        # Env-Vars wiederherstellen
-        for key in keys:
-            if env_backup[key] is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = env_backup[key]
 
 
 class IbkrAdapter(BrokerAdapter):
@@ -58,7 +42,13 @@ class IbkrAdapter(BrokerAdapter):
 
     def _get_client(self):
         if self._client is None:
-            self._client = _create_ibkr_client(self._env)
+            from ibind import IbkrClient
+            _set_ibind_env(self._env)
+            use_oauth = str(self._env.get("IBIND_USE_OAUTH", "false")).lower() in ("1", "true", "yes", "on")
+            self._client = IbkrClient(use_oauth=use_oauth, auto_register_shutdown=False)
+        else:
+            # Env-Vars erneut setzen (falls anderer Adapter sie ueberschrieben hat)
+            _set_ibind_env(self._env)
         return self._client
 
     def _fetch_positions_raw(self) -> list[Position]:

@@ -16,6 +16,7 @@ dependencies = [
     "pyyaml>=6.0",
     "ibind[oauth]>=0.1.21",
     "trading-ig>=0.0.23",
+    "munch>=4.0.0",
     "yfinance>=0.2.55",
 ]
 
