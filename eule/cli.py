@@ -800,6 +800,7 @@ def precheck(
 ) -> None:
     """Health-Check aller Hase-Environments."""
     import subprocess
+    from pathlib import Path
 
     args = ["python", "-m", "eule.monitoring.precheck"]
     if summary:
