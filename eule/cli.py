@@ -957,6 +957,7 @@ def ep_trades(
 
 @ep_app.command(name="brief")
 def ep_brief(
+    send_email: bool = typer.Option(False, "--email", help="Brief per Email senden"),
     output_format: str = typer.Option("markdown", "--format", help="Output-Format: markdown oder json"),
 ) -> None:
     """Pre-Market Morning Brief."""
@@ -975,7 +976,16 @@ def ep_brief(
         })
         return
 
-    console.print(morning_brief())
+    brief_text = morning_brief()
+
+    if send_email:
+        from datetime import date
+        from eule.email import send_email as _send
+        subject = f"EP Morning Brief — {date.today().isoformat()}"
+        _send(subject=subject, body=brief_text)
+        console.print(f"[green]Email gesendet.[/green]")
+    else:
+        console.print(brief_text)
 
 
 if __name__ == "__main__":
