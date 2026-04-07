@@ -486,7 +486,7 @@ def invoke_claude(context: str, task: str) -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=str(HASE_ROOT),
+            cwd=str(_hase_root()),
             env={**os.environ, "TELEGRAM_BOT_TOKEN": BOT_TOKEN, "TELEGRAM_CHAT_ID": CHAT_ID},
         )
 
