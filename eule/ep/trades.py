@@ -71,7 +71,7 @@ class EPTrade:
 
     @property
     def unrealized_pnl(self) -> float:
-        if self.filled_shares > 0 and self.broker_market_price > 0:
+        if self.filled_shares > 0 and (self.broker_market_price or 0) > 0:
             return (self.broker_market_price - self.filled_price) * self.filled_shares
         return 0.0
 
@@ -107,9 +107,9 @@ def load_trades() -> list[EPTrade]:
             target_r1=targets.get("r1", 0.0),
             target_r2=targets.get("r2", 0.0),
             target_r3=targets.get("r3", 0.0),
-            broker_qty=broker.get("positionQty", 0.0),
-            broker_avg_price=broker.get("avgPrice", 0.0),
-            broker_market_price=broker.get("marketPrice", 0.0),
+            broker_qty=broker.get("positionQty") or 0.0,
+            broker_avg_price=broker.get("avgPrice") or 0.0,
+            broker_market_price=broker.get("marketPrice") or 0.0,
             stop_at_broker=broker.get("stopOrderPresent", False),
             notes=t.get("notes", []),
         ))
