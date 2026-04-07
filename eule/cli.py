@@ -827,5 +827,156 @@ def bot() -> None:
     bot_main()
 
 
+# ──────────────────────────────────────────────────
+# EP Scanner Commands
+# ──────────────────────────────────────────────────
+
+ep_app = typer.Typer(name="ep", help="Episodic Pivot Scanner + Trades")
+app.add_typer(ep_app)
+
+
+@ep_app.command(name="scan")
+def ep_scan(
+    days: int = typer.Option(1, "--days", help="Emails der letzten N Tage"),
+    mark_read: bool = typer.Option(False, "--mark-read", help="Emails als gelesen markieren"),
+    min_gap: float = typer.Option(8.0, "--min-gap", help="Minimaler Gap in %"),
+    output_format: str = typer.Option("markdown", "--format", help="Output-Format: markdown oder json"),
+) -> None:
+    """Barchart-Screener-Emails fetchen, parsen und auto-scoren."""
+    from eule.ep.scanner import scan
+
+    candidates = scan(days=days, mark_read=mark_read, min_gap=min_gap)
+
+    if output_format == "json":
+        _output_json([{
+            "symbol": c.symbol, "pct_change": c.pct_change, "volume": c.volume,
+            "close_position": round(c.close_position, 2), "auto_score": c.auto_score,
+            "screener_type": c.screener_type, "score_details": c.score_details,
+        } for c in candidates])
+        return
+
+    if not candidates:
+        console.print("[yellow]Keine EP-Kandidaten gefunden.[/yellow]")
+        return
+
+    table = Table(title=f"EP Scanner ({len(candidates)} Kandidaten)")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Gap%", justify="right")
+    table.add_column("Close Pos", justify="right")
+    table.add_column("Volume", justify="right")
+    table.add_column("Auto-Score", justify="center")
+    table.add_column("Typ", style="dim")
+
+    for c in candidates:
+        gap_style = "green" if c.gap_ok else "yellow"
+        close_style = "green" if c.close_ok else "yellow"
+        table.add_row(
+            c.symbol,
+            f"[{gap_style}]{c.pct_change:+.1f}%[/{gap_style}]",
+            f"[{close_style}]{c.close_position:.2f}[/{close_style}]",
+            f"{c.volume:,}",
+            f"{c.auto_score}/2",
+            c.screener_type,
+        )
+
+    console.print(table)
+    console.print("\n[dim]Auto-Score: 2 von 10 Kriterien (Gap >=10%, Close >=0.75). "
+                  "Fuer vollstaendiges Scoring: Claude fragen.[/dim]")
+
+
+@ep_app.command(name="trades")
+def ep_trades(
+    output_format: str = typer.Option("markdown", "--format", help="Output-Format: markdown oder json"),
+) -> None:
+    """EP-Trades und Watchlist anzeigen."""
+    from eule.ep.trades import get_active_trades, get_watchlist
+
+    active = get_active_trades()
+    watch = get_watchlist()
+
+    if output_format == "json":
+        _output_json({
+            "active": [{
+                "ticker": t.ticker, "status": t.status, "entry": t.filled_price,
+                "stop": t.stop, "shares": t.filled_shares, "market_price": t.broker_market_price,
+                "pnl": round(t.unrealized_pnl, 2), "stop_at_broker": t.stop_at_broker,
+            } for t in active],
+            "watchlist": [{
+                "ticker": t.ticker, "entry": t.entry, "stop": t.stop,
+                "shares": t.planned_shares, "risk": round(t.risk_total, 2),
+                "setup_type": t.setup_type,
+            } for t in watch],
+        })
+        return
+
+    if active:
+        table = Table(title=f"Offene EP-Positionen ({len(active)})")
+        table.add_column("Ticker", style="bold")
+        table.add_column("Status")
+        table.add_column("Entry", justify="right")
+        table.add_column("Stop", justify="right")
+        table.add_column("Shares", justify="right")
+        table.add_column("Markt", justify="right")
+        table.add_column("P&L", justify="right")
+        table.add_column("Stop?", justify="center")
+
+        for t in active:
+            pnl = t.unrealized_pnl
+            pnl_style = "green" if pnl >= 0 else "red"
+            market_str = f"${t.broker_market_price:.2f}" if t.broker_market_price > 0 else "-"
+            pnl_str = f"[{pnl_style}]${pnl:+.2f}[/{pnl_style}]" if pnl != 0 else "-"
+            stop_str = "[green]OK[/green]" if t.stop_at_broker else "[red]FEHLT[/red]"
+
+            table.add_row(
+                t.ticker, t.status,
+                f"${t.filled_price:.2f}", f"${t.stop:.2f}",
+                str(t.filled_shares), market_str, pnl_str, stop_str,
+            )
+        console.print(table)
+    else:
+        console.print("[dim]Keine offenen EP-Positionen.[/dim]")
+
+    if watch:
+        console.print()
+        table = Table(title=f"EP Watchlist ({len(watch)})")
+        table.add_column("Ticker", style="bold")
+        table.add_column("Setup")
+        table.add_column("Entry", justify="right")
+        table.add_column("Stop", justify="right")
+        table.add_column("Shares", justify="right")
+        table.add_column("Risiko", justify="right")
+
+        for t in watch:
+            table.add_row(
+                t.ticker, t.setup_type,
+                f"${t.entry:.2f}", f"${t.stop:.2f}",
+                str(t.planned_shares), f"${t.risk_total:.0f}",
+            )
+        console.print(table)
+
+
+@ep_app.command(name="brief")
+def ep_brief(
+    output_format: str = typer.Option("markdown", "--format", help="Output-Format: markdown oder json"),
+) -> None:
+    """Pre-Market Morning Brief."""
+    from eule.ep.trades import morning_brief
+
+    if output_format == "json":
+        from eule.ep.trades import get_active_trades, get_watchlist
+        active = get_active_trades()
+        watch = get_watchlist()
+        _output_json({
+            "active": [{"ticker": t.ticker, "entry": t.filled_price, "stop": t.stop,
+                        "market": t.broker_market_price, "pnl": round(t.unrealized_pnl, 2),
+                        "stop_at_broker": t.stop_at_broker} for t in active],
+            "watchlist": [{"ticker": t.ticker, "entry": t.entry, "stop": t.stop,
+                           "shares": t.planned_shares} for t in watch],
+        })
+        return
+
+    console.print(morning_brief())
+
+
 if __name__ == "__main__":
     app()
