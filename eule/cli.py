@@ -746,5 +746,81 @@ def config_check() -> None:
         raise typer.Exit(1)
 
 
+# ──────────────────────────────────────────────────
+# Elster Sub-App (Performance Reports)
+# Lazy-loaded: pandas/numpy nur bei 'eule elster ...'
+# ──────────────────────────────────────────────────
+
+elster_app = typer.Typer(name="elster", help="Performance-Reports (ex-Elster)")
+app.add_typer(elster_app)
+
+
+@elster_app.command()
+def report(
+    env: str = typer.Option("real-ibkr", "--env", help="Hase-Environment"),
+    strategy: str = typer.Option(None, "--strategy", help="Einzelne Strategie"),
+    days: int = typer.Option(None, "--days", help="Letzte N Tage"),
+    regimes: bool = typer.Option(False, "--regimes", help="Regime-Vergleich"),
+) -> None:
+    """Performance-Report fuer ein Environment."""
+    from eule.elster.cli import report as _report
+    _report(env=env, strategy=strategy, days=days, regimes=regimes)
+
+
+@elster_app.command()
+def compare(
+    env: str = typer.Option("real-ibkr", "--env", help="Hase-Environment"),
+    strategy: str = typer.Option(None, "--strategy", help="Einzelne Strategie"),
+    days: int = typer.Option(None, "--days", help="Letzte N Tage"),
+) -> None:
+    """Live-Performance gegen Baseline vergleichen."""
+    from eule.elster.cli import compare as _compare
+    _compare(env=env, strategy=strategy, days=days)
+
+
+@elster_app.command()
+def portfolio(
+    env: str = typer.Option("real-ibkr", "--env", help="Hase-Environment"),
+    days: int = typer.Option(60, "--days", help="Letzte N Tage"),
+) -> None:
+    """Portfolio-Analyse mit Korrelationsmatrix."""
+    from eule.elster.cli import portfolio as _portfolio
+    _portfolio(env=env, days=days)
+
+
+# ──────────────────────────────────────────────────
+# Monitoring Commands
+# ──────────────────────────────────────────────────
+
+
+@app.command()
+def precheck(
+    summary: bool = typer.Option(False, "--summary", help="Daily-Summary erzwingen"),
+    format: str = typer.Option("text", "--format", help="Output-Format: text oder json"),
+) -> None:
+    """Health-Check aller Hase-Environments."""
+    import subprocess
+
+    args = ["python", "-m", "eule.monitoring.precheck"]
+    if summary:
+        args.append("--summary")
+    result = subprocess.run(args, capture_output=True, text=True, cwd=str(Path.cwd()))
+    output = result.stdout.strip() or result.stderr.strip() or "(no output)"
+
+    if format == "json":
+        _output_json({"exit_code": result.returncode, "output": output})
+    else:
+        console.print(output)
+    raise typer.Exit(result.returncode)
+
+
+@app.command()
+def bot() -> None:
+    """Wachtel Telegram Bot starten."""
+    from eule.monitoring.telegram_bot import main as bot_main
+
+    bot_main()
+
+
 if __name__ == "__main__":
     app()

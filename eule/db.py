@@ -12,20 +12,21 @@ import psycopg
 from dotenv import dotenv_values
 
 
-def _get_hase_base() -> Path:
+def get_hase_base() -> Path:
     """Hase-Basisverzeichnis: EULE_HASE_DIR env-var oder ~/fin/hase als Fallback."""
     return Path(os.environ.get("EULE_HASE_DIR", Path.home() / "fin" / "hase"))
 
 
 def _build_env_dirs() -> dict[str, Path]:
-    base = _get_hase_base()
+    base = get_hase_base()
     return {
+        "staging-ibkr": base / "run" / "staging" / "ibkr",
+        "staging-hl": base / "run" / "staging" / "hl",
         "real-ibkr": base / "run" / "real" / "ibkr-one",
         "real2-ibkr": base / "run" / "real" / "ibkr-two",
     }
 
 
-# Lazy property — wird bei erstem Zugriff aufgebaut
 ENV_DIRS: dict[str, Path] = _build_env_dirs()
 
 

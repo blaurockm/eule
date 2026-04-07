@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from eule.db import _build_env_dirs, _get_hase_base, ENV_DIRS, list_environments
+from eule.db import _build_env_dirs, get_hase_base, ENV_DIRS, list_environments
 
 
 class TestEnvConfig:
@@ -27,7 +27,7 @@ class TestHaseBase:
         monkeypatch.delenv("EULE_HASE_DIR", raising=False)
         from pathlib import Path
 
-        base = _get_hase_base()
+        base = get_hase_base()
         assert base == Path.home() / "fin" / "hase"
 
     def test_custom_hase_base(self, monkeypatch):
@@ -35,7 +35,7 @@ class TestHaseBase:
         monkeypatch.setenv("EULE_HASE_DIR", "/tmp/my-hase")
         from pathlib import Path
 
-        base = _get_hase_base()
+        base = get_hase_base()
         assert base == Path("/tmp/my-hase")
 
     def test_build_env_dirs_uses_base(self, monkeypatch):

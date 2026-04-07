@@ -1,0 +1,37 @@
+strategy_name: crypto-bb-short-mr
+strategy_class: quanta.klein_see.strategy.CryptoBBShortMR
+dachs_project: klein-see
+environments: [staging-hl]
+
+entry:
+  weekdays: [0, 1, 2, 3, 4, 5, 6]
+  time: "00:00"
+  timezone: "UTC"
+
+fsm:
+  valid_states: [FLAT, ENTERING, IN_POSITION, EXITING, FOREIGN_POSITION]
+  expectations:
+    - condition: "any time"
+      expected: [FLAT, IN_POSITION]
+
+metrics:
+  win_rate:
+    expected: 0.86
+    warn_below: 0.70
+    lookback_trades: 20
+  profit_factor:
+    expected: 2.23
+  max_daily_loss:
+    warn_below: -30.0
+  trade_frequency:
+    expected_per_week: 1.5
+    warn_if_zero_days: 21
+  max_consecutive_losses:
+    warn_threshold: 4
+
+health:
+  max_error_count: 0
+  min_events_delta: 0
+  worker_alive: true
+  circuit_breaker_closed: true
+  max_queue_size: 50

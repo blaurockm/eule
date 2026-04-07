@@ -1,0 +1,39 @@
+strategy_name: spx-0dte-tue-put
+strategy_class: quanta.zerodte.combo_strategy.ComboStrategy
+dachs_project: silbern-marder
+environments: [real-ibkr, real2-ibkr, staging-ibkr]
+
+entry:
+  weekdays: [1]
+  time: "11:00"
+  timezone: "US/Eastern"
+
+fsm:
+  valid_states: [EVALUATING, FLAT, PENDING_FILL, IN_POSITION, ERROR]
+  expectations:
+    - condition: "not Tuesday"
+      expected: FLAT
+    - condition: "Tuesday after 11:30 ET"
+      expected: [IN_POSITION, FLAT]
+    - condition: "after 16:00 ET"
+      expected: [FLAT, IN_POSITION]
+
+metrics:
+  win_rate:
+    expected: 0.92
+    warn_below: 0.80
+    lookback_trades: 20
+  max_daily_loss:
+    warn_below: -1500.0
+  trade_frequency:
+    expected_per_week: 1.0
+    warn_if_zero_days: 10
+  max_consecutive_losses:
+    warn_threshold: 3
+
+health:
+  max_error_count: 0
+  min_events_delta: 0
+  worker_alive: true
+  circuit_breaker_closed: true
+  max_queue_size: 50

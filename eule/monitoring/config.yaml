@@ -1,0 +1,11 @@
+telegram:
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  allowed_chat_id: "5592934887"
+
+healthcheck:
+  ping_url: "${HEALTHCHECK_URL}"
+
+claude:
+  model: sonnet
+  max_turns: 15
+  timeout_seconds: 120

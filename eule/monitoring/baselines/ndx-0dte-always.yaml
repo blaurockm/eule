@@ -1,0 +1,37 @@
+strategy_name: ndx-0dte-always
+strategy_class: quanta.zerodte.combo_strategy.ComboStrategy
+dachs_project: silbern-marder
+environments: [staging-ibkr]
+
+entry:
+  weekdays: [0, 1, 2, 3, 4]
+  time: "11:00"
+  timezone: "US/Eastern"
+
+fsm:
+  valid_states: [EVALUATING, FLAT, PENDING_FILL, IN_POSITION, ERROR]
+  expectations:
+    - condition: "weekday after 11:30 ET"
+      expected: [IN_POSITION, FLAT]
+    - condition: "after 16:00 ET"
+      expected: [FLAT, IN_POSITION]
+
+metrics:
+  win_rate:
+    expected: 0.96
+    warn_below: 0.85
+    lookback_trades: 30
+  max_daily_loss:
+    warn_below: -1000.0
+  trade_frequency:
+    expected_per_week: 5.0
+    warn_if_zero_days: 3
+  max_consecutive_losses:
+    warn_threshold: 3
+
+health:
+  max_error_count: 0
+  min_events_delta: 0
+  worker_alive: true
+  circuit_breaker_closed: true
+  max_queue_size: 50

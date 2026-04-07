@@ -1,0 +1,41 @@
+strategy_name: carver-scalping
+strategy_class: quanta.scalp.strategy.MRstrat
+dachs_project: weich-otter
+environments: [staging-ibkr]
+
+entry:
+  weekdays: [0, 1, 2, 3, 4]
+  time: "09:15"
+  timezone: "Europe/Berlin"
+
+fsm:
+  valid_states: [IDLE, FLAT, FANGNETZ, EXPOSED, CLOSING, NO_DATA]
+  expectations:
+    - condition: "trading hours (09:15-17:25 CET)"
+      expected: [FANGNETZ, EXPOSED, FLAT, CLOSING]
+    - condition: "outside trading hours"
+      expected: [IDLE, FLAT]
+    - condition: "market open first minutes"
+      expected: [NO_DATA, IDLE, FLAT]
+
+metrics:
+  win_rate:
+    expected: 0.387
+    warn_below: 0.25
+    lookback_trades: 100
+  profit_factor:
+    expected: 1.26
+  max_daily_loss:
+    warn_below: -500.0
+  trade_frequency:
+    expected_per_week: 11.5
+    warn_if_zero_days: 3
+  max_consecutive_losses:
+    warn_threshold: 20
+
+health:
+  max_error_count: 0
+  min_events_delta: 0
+  worker_alive: true
+  circuit_breaker_closed: true
+  max_queue_size: 50

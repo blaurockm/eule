@@ -1,0 +1,37 @@
+strategy_name: crypto-trendconv-v7d
+strategy_class: quanta.schnell_wolf.strategy.CryptoTrendConv
+dachs_project: schnell-wolf
+environments: [staging-hl]
+
+entry:
+  weekdays: [0, 1, 2, 3, 4, 5, 6]
+  time: "00:00"
+  timezone: "UTC"
+
+fsm:
+  valid_states: [FLAT, ENTERING, IN_POSITION, EXITING, SCANNING, UNKNOWN]
+  expectations:
+    - condition: "any time"
+      expected: [FLAT, SCANNING, IN_POSITION, EXITING]
+
+metrics:
+  win_rate:
+    expected: 0.11
+    warn_below: 0.05
+    lookback_trades: 50
+  profit_factor:
+    expected: 1.61
+  max_daily_loss:
+    warn_below: -100.0
+  trade_frequency:
+    expected_per_week: 3.7
+    warn_if_zero_days: 14
+  max_consecutive_losses:
+    warn_threshold: 15
+
+health:
+  max_error_count: 0
+  min_events_delta: 0
+  worker_alive: true
+  circuit_breaker_closed: true
+  max_queue_size: 50
