@@ -5,6 +5,10 @@ Eule CLI — Trade Journal + Portfolio Monitor.
 import json
 import sys
 
+from dotenv import load_dotenv
+
+load_dotenv()  # .env im Arbeitsverzeichnis laden (z.B. EULE_HASE_DIR)
+
 import typer
 from rich.console import Console
 from rich.table import Table
