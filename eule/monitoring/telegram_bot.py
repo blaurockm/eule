@@ -49,9 +49,18 @@ AGENT_PROMPT = MONITORING_DIR / "agent_prompt.md"
 EULE_ROOT = MONITORING_DIR.parent.parent  # eule project root
 
 
-def _hase_root() -> Path:
-    """Hase project root fuer Logs + Fuchs-Config."""
-    return Path(os.environ.get("EULE_HASE_DIR", Path.home() / "fin" / "hase"))
+def _hase_root(env: str | None = None) -> Path:
+    """Hase-Installation fuer ein Environment.
+
+    Production (real-*) liegt unter ~/hase/, Staging unter ~/staging/.
+    Auf dem Entwicklungsrechner kann EULE_HASE_DIR alles ueberschreiben.
+    """
+    override = os.environ.get("EULE_HASE_DIR")
+    if override:
+        return Path(override)
+    if env and env.startswith("staging"):
+        return Path.home() / "staging"
+    return Path.home() / "hase"
 
 PRECHECK_INTERVAL = 15 * 60  # 15 minutes
 TELEGRAM_POLL_TIMEOUT = 30
@@ -252,9 +261,9 @@ def _load_email_config() -> dict | None:
     if _email_config is not None:
         return _email_config
 
-    config_path = _hase_root() / "fuchs-config.production.json"
+    config_path = _hase_root("real-ibkr") / "fuchs-config.production.json"
     if not config_path.exists():
-        config_path = _hase_root() / "fuchs-config.staging.json"
+        config_path = _hase_root("staging-ibkr") / "fuchs-config.staging.json"
     if not config_path.exists():
         log.warning("No fuchs-config found for email")
         return None
@@ -1013,7 +1022,7 @@ def handle_callback(callback_query: dict) -> None:
             result_text = f"Fehler beim Restart: {output}"
 
     elif action == "emergency":
-        config_path = _hase_root() / _FUCHS_CONFIGS[env]
+        config_path = _hase_root(env) / _FUCHS_CONFIGS[env]
         try:
             with open(config_path) as f:
                 config = json.load(f)
