@@ -46,8 +46,8 @@ def _get_filled_data(pipeline_id: str) -> tuple[int, float]:
         row = conn.execute(
             "SELECT COALESCE(SUM(qty), 0), "
             "CASE WHEN SUM(qty) > 0 THEN SUM(value) / SUM(qty) ELSE 0 END "
-            "FROM trades WHERE runtime_name = 'eule-ep' AND trade_ref = %s AND side = 'buy'",
-            (pipeline_id,),
+            "FROM trades WHERE runtime_name = 'eule-ep' AND trade_ref = %s",
+            (f"{pipeline_id}:buy",),
         ).fetchone()
         return int(row[0]), float(row[1])
     finally:

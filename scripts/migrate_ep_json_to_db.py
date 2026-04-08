@@ -107,7 +107,7 @@ def migrate(dry_run: bool = False):
                         "qty": fill_shares,
                         "price": fill_price,
                         "value": fill_price * fill_shares,
-                        "trade_ref": ep.id,
+                        "trade_ref": f"{ep.id}:buy",
                     },
                 )
 
@@ -145,7 +145,7 @@ def migrate(dry_run: bool = False):
                         "qty": close_shares,
                         "price": close_price,
                         "value": close_price * close_shares,
-                        "trade_ref": ep.id,
+                        "trade_ref": f"{ep.id}:sell",
                     },
                 )
 

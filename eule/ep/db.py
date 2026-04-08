@@ -224,15 +224,15 @@ def record_fill(
             "qty": fill_shares,
             "price": fill_price,
             "value": value,
-            "trade_ref": pipeline_id,
+            "trade_ref": f"{pipeline_id}:buy",
         },
     )
 
     # Pipeline-Status: open wenn erster Fill, partial wenn es schon Fills gibt
     existing_fills = conn.execute(
         "SELECT COALESCE(SUM(qty), 0) FROM trades "
-        "WHERE runtime_name = 'eule-ep' AND trade_ref = %s AND side = 'buy'",
-        (pipeline_id,),
+        "WHERE runtime_name = 'eule-ep' AND trade_ref = %s",
+        (f"{pipeline_id}:buy",),
     ).fetchone()[0]
 
     new_status = "partial" if existing_fills < entry.planned_shares else "open"
@@ -280,20 +280,20 @@ def close_pipeline(
             "qty": exit_shares,
             "price": exit_price,
             "value": value,
-            "trade_ref": pipeline_id,
+            "trade_ref": f"{pipeline_id}:sell",
         },
     )
 
     # Pruefen ob alle Shares verkauft
     total_bought = conn.execute(
         "SELECT COALESCE(SUM(qty), 0) FROM trades "
-        "WHERE runtime_name = 'eule-ep' AND trade_ref = %s AND side = 'buy'",
-        (pipeline_id,),
+        "WHERE runtime_name = 'eule-ep' AND trade_ref = %s",
+        (f"{pipeline_id}:buy",),
     ).fetchone()[0]
     total_sold = conn.execute(
         "SELECT COALESCE(SUM(qty), 0) FROM trades "
-        "WHERE runtime_name = 'eule-ep' AND trade_ref = %s AND side = 'sell'",
-        (pipeline_id,),
+        "WHERE runtime_name = 'eule-ep' AND trade_ref = %s",
+        (f"{pipeline_id}:sell",),
     ).fetchone()[0]
 
     if total_sold >= total_bought:
