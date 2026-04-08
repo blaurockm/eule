@@ -1,137 +1,63 @@
 """
 EP Trades — Lesen und Anzeigen von EP-Positionen und Watchlist.
 
-Liest ep-trades.json (aktuell aus trading-collab, spaeter aus Eule-DB).
+Liest aus der ep_pipeline-Tabelle in PostgreSQL.
 """
 
-import json
-import os
-from dataclasses import dataclass
-from pathlib import Path
+from eule.db import get_db_connection
+from eule.ep.db import EPPipeline, list_pipeline
 
 
-def _find_trades_file() -> Path:
-    """EP-Trades-Datei finden.
-
-    Sucht in:
-    1. EULE_EP_TRADES env var
-    2. ~/.eule/ep-trades.json
-    3. ~/fin/trading-collab/ep-trades.json
-    """
-    env_path = os.environ.get("EULE_EP_TRADES")
-    if env_path:
-        return Path(env_path)
-
-    for path in [
-        Path.home() / ".eule" / "ep-trades.json",
-        Path.home() / "fin" / "trading-collab" / "ep-trades.json",
-        Path.home() / "trading-collab" / "ep-trades.json",  # auf systematic
-    ]:
-        if path.exists():
-            return path
-
-    raise FileNotFoundError(
-        "ep-trades.json nicht gefunden. "
-        "Setze EULE_EP_TRADES oder lege ~/.eule/ep-trades.json an."
-    )
+def _default_conn():
+    return get_db_connection("real-ibkr")
 
 
-@dataclass
-class EPTrade:
-    """Ein EP-Trade aus ep-trades.json."""
-
-    id: str
-    ticker: str
-    status: str  # open, partial, watch, ordered, idea, closed, invalid
-    setup_type: str
-    catalyst: str
-    entry: float
-    stop: float
-    risk_per_share: float
-    planned_shares: int
-    filled_shares: int = 0
-    filled_price: float = 0.0
-    filled_date: str = ""
-    target_r1: float = 0.0
-    target_r2: float = 0.0
-    target_r3: float = 0.0
-    broker_qty: float = 0.0
-    broker_avg_price: float = 0.0
-    broker_market_price: float = 0.0
-    stop_at_broker: bool = False
-    notes: list[str] = None
-
-    @property
-    def is_active(self) -> bool:
-        return self.status in ("open", "partial", "ordered")
-
-    @property
-    def is_watch(self) -> bool:
-        return self.status in ("watch", "idea")
-
-    @property
-    def unrealized_pnl(self) -> float:
-        if self.filled_shares > 0 and (self.broker_market_price or 0) > 0:
-            return (self.broker_market_price - self.filled_price) * self.filled_shares
-        return 0.0
-
-    @property
-    def risk_total(self) -> float:
-        return self.risk_per_share * self.planned_shares
+def load_trades() -> list[EPPipeline]:
+    """Alle EP-Pipeline-Eintraege laden (nicht invalid)."""
+    conn = _default_conn()
+    try:
+        return list_pipeline(conn, status_filter=["idea", "watch", "ordered", "open", "partial", "closed"])
+    finally:
+        conn.close()
 
 
-def load_trades() -> list[EPTrade]:
-    """EP-Trades aus JSON laden."""
-    path = _find_trades_file()
-    data = json.loads(path.read_text())
-
-    trades = []
-    for t in data.get("trades", []):
-        filled = t.get("filled", {})
-        targets = t.get("targets", {})
-        broker = t.get("broker", {})
-
-        trades.append(EPTrade(
-            id=t.get("id", ""),
-            ticker=t.get("ticker", ""),
-            status=t.get("status", ""),
-            setup_type=t.get("setupType", ""),
-            catalyst=t.get("catalyst", ""),
-            entry=t.get("entry", 0.0),
-            stop=t.get("stop", 0.0),
-            risk_per_share=t.get("riskPerShare", 0.0),
-            planned_shares=t.get("plannedShares", 0),
-            filled_shares=filled.get("shares", 0),
-            filled_price=filled.get("avgPrice", 0.0),
-            filled_date=filled.get("date", ""),
-            target_r1=targets.get("r1", 0.0),
-            target_r2=targets.get("r2", 0.0),
-            target_r3=targets.get("r3", 0.0),
-            broker_qty=broker.get("positionQty") or 0.0,
-            broker_avg_price=broker.get("avgPrice") or 0.0,
-            broker_market_price=broker.get("marketPrice") or 0.0,
-            stop_at_broker=broker.get("stopOrderPresent", False),
-            notes=t.get("notes", []),
-        ))
-
-    return trades
-
-
-def get_active_trades() -> list[EPTrade]:
+def get_active_trades() -> list[EPPipeline]:
     """Nur aktive Trades (open, partial, ordered)."""
-    return [t for t in load_trades() if t.is_active]
+    conn = _default_conn()
+    try:
+        return list_pipeline(conn, status_filter=["open", "partial", "ordered"])
+    finally:
+        conn.close()
 
 
-def get_watchlist() -> list[EPTrade]:
+def get_watchlist() -> list[EPPipeline]:
     """Nur Watchlist-Eintraege (watch, idea)."""
-    return [t for t in load_trades() if t.is_watch]
+    conn = _default_conn()
+    try:
+        return list_pipeline(conn, status_filter=["watch", "idea"])
+    finally:
+        conn.close()
+
+
+def _get_filled_data(pipeline_id: str) -> tuple[int, float]:
+    """Filled shares + avg price aus trades-Tabelle holen."""
+    conn = _default_conn()
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(qty), 0), "
+            "CASE WHEN SUM(qty) > 0 THEN SUM(value) / SUM(qty) ELSE 0 END "
+            "FROM trades WHERE runtime_name = 'eule-ep' AND trade_ref = %s AND side = 'buy'",
+            (pipeline_id,),
+        ).fetchone()
+        return int(row[0]), float(row[1])
+    finally:
+        conn.close()
 
 
 def morning_brief() -> str:
     """Pre-Market Brief: offene Positionen + Watchlist."""
-    trades = load_trades()
-    active = [t for t in trades if t.is_active]
-    watch = [t for t in trades if t.is_watch]
+    active = get_active_trades()
+    watch = get_watchlist()
 
     lines = ["EP Morning Brief", "=" * 40, ""]
 
@@ -139,16 +65,11 @@ def morning_brief() -> str:
         lines.append(f"OFFENE POSITIONEN ({len(active)})")
         lines.append("-" * 30)
         for t in active:
-            pnl = t.unrealized_pnl
-            pnl_str = f"${pnl:+.2f}" if pnl != 0 else "n/a"
+            filled_shares, filled_price = _get_filled_data(t.id)
             lines.append(f"  {t.ticker} [{t.status}]")
-            lines.append(f"    Entry: ${t.filled_price:.2f} x {t.filled_shares}")
-            lines.append(f"    Stop: ${t.stop:.2f} | Risk: ${t.risk_total:.0f}")
+            lines.append(f"    Entry: ${filled_price:.2f} x {filled_shares}")
+            lines.append(f"    Stop: ${t.stop_plan:.2f} | Risk: ${t.risk_total:.0f}")
             lines.append(f"    1R: ${t.target_r1:.2f} | 2R: ${t.target_r2:.2f}")
-            if t.broker_market_price > 0:
-                lines.append(f"    Markt: ${t.broker_market_price:.2f} | P&L: {pnl_str}")
-            if not t.stop_at_broker:
-                lines.append(f"    !! KEIN STOP AM BROKER !!")
             lines.append("")
     else:
         lines.append("Keine offenen EP-Positionen.")
@@ -159,7 +80,7 @@ def morning_brief() -> str:
         lines.append("-" * 30)
         for t in watch:
             lines.append(f"  {t.ticker} [{t.setup_type}]")
-            lines.append(f"    Entry: ${t.entry:.2f} | Stop: ${t.stop:.2f}")
+            lines.append(f"    Entry: ${t.entry_plan:.2f} | Stop: ${t.stop_plan:.2f}")
             lines.append(f"    Shares: {t.planned_shares} | Risk: ${t.risk_total:.0f}")
             if t.notes:
                 lines.append(f"    Note: {t.notes[-1]}")
