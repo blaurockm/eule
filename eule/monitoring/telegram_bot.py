@@ -50,9 +50,8 @@ EULE_ROOT = MONITORING_DIR.parent.parent  # eule project root
 
 
 def _hase_root() -> Path:
-    """Hase project root — lazy, resolved on first call."""
-    from eule.db import get_hase_base
-    return get_hase_base()
+    """Hase project root fuer Logs + Fuchs-Config."""
+    return Path(os.environ.get("EULE_HASE_DIR", Path.home() / "fin" / "hase"))
 
 PRECHECK_INTERVAL = 15 * 60  # 15 minutes
 TELEGRAM_POLL_TIMEOUT = 30
@@ -486,7 +485,7 @@ def invoke_claude(context: str, task: str) -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=str(_hase_root()),
+            cwd=str(EULE_ROOT),
             env={**os.environ, "TELEGRAM_BOT_TOKEN": BOT_TOKEN, "TELEGRAM_CHAT_ID": CHAT_ID},
         )
 
@@ -577,18 +576,10 @@ def handle_baseline(args: str) -> str:
 
 
 def _load_database_url() -> str | None:
-    """Load DATABASE_URL from staging .env (all envs share same DB)."""
+    """Load DATABASE_URL from environment variables."""
     try:
-        from eule.db import get_hase_base
-        from dotenv import dotenv_values
-        for env_subdir in ["run/staging/ibkr", "run/real/ibkr-one"]:
-            env_file = get_hase_base() / env_subdir / ".env"
-            if env_file.exists():
-                values = dotenv_values(env_file)
-                url = values.get("DATABASE_URL")
-                if url:
-                    return url
-        return None
+        from eule.db import get_db_url
+        return get_db_url("real-ibkr")
     except Exception:
         return None
 

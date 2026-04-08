@@ -38,16 +38,10 @@ class Regime:
 
 
 def get_runtime_name(env_name: str) -> str:
-    """Liest runtime_name, Fallback auf env_name bei fehlendem config.json."""
-    from eule.db import ENV_DIRS, get_runtime_name as _rt_name
+    """Runtime-Name fuer ein Environment (DB-Filter)."""
+    from eule.db import RUNTIME_NAMES
 
-    env_dir = ENV_DIRS.get(env_name)
-    if not env_dir:
-        return env_name
-    try:
-        return _rt_name(env_dir)
-    except FileNotFoundError:
-        return env_name
+    return RUNTIME_NAMES.get(env_name, env_name)
 
 
 def load_daily_pnl(

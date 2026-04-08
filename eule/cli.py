@@ -7,7 +7,7 @@ import sys
 
 from dotenv import load_dotenv
 
-load_dotenv()  # .env im Arbeitsverzeichnis laden (z.B. EULE_HASE_DIR)
+load_dotenv()  # .env im Arbeitsverzeichnis laden (EULE_DB_* etc.)
 
 import typer
 from rich.console import Console

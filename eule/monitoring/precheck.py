@@ -13,6 +13,7 @@ Exit codes:
 
 import argparse
 import math
+import os
 import sys
 from datetime import datetime, time
 from pathlib import Path
@@ -396,8 +397,8 @@ def check_environment(env_name: str, env_config: dict, baselines: dict) -> list[
 
     # 5. Broker log health check — scan for critical broker errors
     # These errors indicate the broker connection is broken and strategies cannot trade
-    from eule.db import get_hase_base
-    broker_log_dir = get_hase_base() / "werkstatt" / "logs"
+    hase_dir = Path(os.environ.get("EULE_HASE_DIR", Path.home() / "fin" / "hase"))
+    broker_log_dir = hase_dir / "werkstatt" / "logs"
     today_str = datetime.now(ZoneInfo("Europe/Berlin")).strftime("%Y%m%d")
     broker_log_pattern = f"BrokerIBKR_{env_name}_{today_str}*.log"
     broker_logs = sorted(broker_log_dir.glob(broker_log_pattern))
@@ -476,10 +477,10 @@ def run_precheck(force_summary: bool = False) -> tuple[int, str]:
         import json
 
         today_str = datetime.now(ZoneInfo("Europe/Berlin")).strftime("%Y-%m-%d")
-        from eule.db import get_hase_base
+        hase_dir = Path(os.environ.get("EULE_HASE_DIR", Path.home() / "fin" / "hase"))
         log_dirs = [
             Path.home() / "staging" / "werkstatt" / "logs",  # staging
-            get_hase_base() / "werkstatt" / "logs",  # production
+            hase_dir / "werkstatt" / "logs",  # production
         ]
 
         # Collect summary JSONs written by runtime end_of_day

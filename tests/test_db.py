@@ -1,10 +1,8 @@
 """Tests fuer DB-Modul (ohne echte DB-Verbindung)."""
 
-import os
-
 import pytest
 
-from eule.db import _build_env_dirs, get_hase_base, ENV_DIRS, list_environments
+from eule.db import RUNTIME_NAMES, get_db_url, list_environments
 
 
 class TestEnvConfig:
@@ -13,39 +11,26 @@ class TestEnvConfig:
         assert "real-ibkr" in envs
         assert "real2-ibkr" in envs
 
-    def test_env_dirs_exist(self):
-        """Prüfe dass die konfigurierten Hase-Verzeichnisse existieren."""
-        for env_name, env_dir in ENV_DIRS.items():
-            assert env_dir.exists(), f"Hase-Verzeichnis fehlt fuer {env_name}: {env_dir}"
-            assert (env_dir / ".env").exists(), f".env fehlt fuer {env_name}"
-            assert (env_dir / "config.json").exists(), f"config.json fehlt fuer {env_name}"
+    def test_runtime_names_complete(self):
+        """Jedes Environment hat einen runtime_name."""
+        for env in list_environments():
+            assert env in RUNTIME_NAMES
 
 
-class TestHaseBase:
-    def test_default_hase_base(self, monkeypatch):
-        """Ohne EULE_HASE_DIR: Fallback auf ~/fin/hase."""
-        monkeypatch.delenv("EULE_HASE_DIR", raising=False)
-        from pathlib import Path
+class TestGetDbUrl:
+    def test_unknown_env_raises(self):
+        with pytest.raises(ValueError, match="Unbekanntes Environment"):
+            get_db_url("nonexistent-env")
 
-        base = get_hase_base()
-        assert base == Path.home() / "fin" / "hase"
+    def test_missing_env_var_raises(self, monkeypatch):
+        """Fehlende Umgebungsvariable gibt klare Fehlermeldung."""
+        monkeypatch.delenv("EULE_DB_REAL_IBKR", raising=False)
+        with pytest.raises(RuntimeError, match="EULE_DB_REAL_IBKR"):
+            get_db_url("real-ibkr")
 
-    def test_custom_hase_base(self, monkeypatch):
-        """EULE_HASE_DIR ueberschreibt den Pfad."""
-        monkeypatch.setenv("EULE_HASE_DIR", "/tmp/my-hase")
-        from pathlib import Path
-
-        base = get_hase_base()
-        assert base == Path("/tmp/my-hase")
-
-    def test_build_env_dirs_uses_base(self, monkeypatch):
-        """_build_env_dirs nutzt den konfigurierten Basispfad."""
-        monkeypatch.setenv("EULE_HASE_DIR", "/opt/hase")
-        from pathlib import Path
-
-        dirs = _build_env_dirs()
-        assert dirs["real-ibkr"] == Path("/opt/hase/run/real/ibkr-one")
-        assert dirs["real2-ibkr"] == Path("/opt/hase/run/real/ibkr-two")
+    def test_reads_env_var(self, monkeypatch):
+        monkeypatch.setenv("EULE_DB_REAL_IBKR", "postgresql://test:5432/db")
+        assert get_db_url("real-ibkr") == "postgresql://test:5432/db"
 
 
 class TestDbConnectionErrors:
