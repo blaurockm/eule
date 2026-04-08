@@ -163,6 +163,18 @@ def upsert_pipeline(conn: psycopg.Connection, entry: EPPipeline) -> None:
     )
 
 
+def _ensure_run(conn: psycopg.Connection, run_id: str) -> None:
+    """Run-Eintrag anlegen falls er nicht existiert (FK-Constraint auf trades)."""
+    conn.execute(
+        """
+        INSERT INTO runs (run_id, runtime_name, is_live, broker, started_at)
+        VALUES (%s, 'eule-ep', true, 'manual', now())
+        ON CONFLICT (run_id) DO NOTHING
+        """,
+        (run_id,),
+    )
+
+
 def update_status(conn: psycopg.Connection, pipeline_id: str, new_status: str) -> None:
     """Status eines Pipeline-Eintrags aendern."""
     conn.execute(
@@ -186,6 +198,7 @@ def record_fill(
         raise ValueError(f"Pipeline-Eintrag '{pipeline_id}' nicht gefunden")
 
     run_id = f"ep-{fill_date.strftime('%Y-%m')}"
+    _ensure_run(conn, run_id)
     ts = datetime.combine(fill_date, datetime.min.time(), tzinfo=ZoneInfo("America/New_York"))
     value = fill_price * fill_shares
 
@@ -241,6 +254,7 @@ def close_pipeline(
         raise ValueError(f"Pipeline-Eintrag '{pipeline_id}' nicht gefunden")
 
     run_id = f"ep-{exit_date.strftime('%Y-%m')}"
+    _ensure_run(conn, run_id)
     ts = datetime.combine(exit_date, datetime.min.time(), tzinfo=ZoneInfo("America/New_York"))
     value = exit_price * exit_shares
 

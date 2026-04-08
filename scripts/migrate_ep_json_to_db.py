@@ -14,7 +14,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from eule.db import get_db_connection
-from eule.ep.db import EPPipeline, upsert_pipeline
+from eule.ep.db import EPPipeline, upsert_pipeline, _ensure_run
 
 
 def migrate(dry_run: bool = False):
@@ -84,6 +84,7 @@ def migrate(dry_run: bool = False):
             print(f"    Buy: {fill_shares}x ${fill_price:.2f} am {fill_date}")
 
             if not dry_run:
+                _ensure_run(conn, run_id)
                 conn.execute(
                     """
                     INSERT INTO trades (
@@ -121,6 +122,7 @@ def migrate(dry_run: bool = False):
             print(f"    Sell: {close_shares}x ${close_price:.2f} am {close_date}")
 
             if not dry_run:
+                _ensure_run(conn, run_id)
                 conn.execute(
                     """
                     INSERT INTO trades (
