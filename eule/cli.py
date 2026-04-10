@@ -43,6 +43,7 @@ app.add_typer(betrieb.config_app)
 app.add_typer(betrieb.schedule_app)
 app.command()(betrieb.precheck)
 app.command()(betrieb.bot)
+app.command()(betrieb.serve)
 
 if __name__ == "__main__":
     app()

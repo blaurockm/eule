@@ -132,6 +132,15 @@ def bot() -> None:
     bot_main()
 
 
+def serve(
+    port: int = typer.Option(8780, "--port", help="HTTP-Port"),
+) -> None:
+    """Wachtel Web-Dashboard starten."""
+    from eule.monitoring.web import serve as web_serve
+
+    web_serve(port=port)
+
+
 # ── Schedule ────────────────────────────────────────
 
 schedule_app = typer.Typer(name="schedule", help="Scheduler verwalten", no_args_is_help=True)
