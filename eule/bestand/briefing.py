@@ -4,11 +4,11 @@ Briefing — aggregiert alle Module in ein Gesamt-Summary.
 
 from dataclasses import dataclass
 
-from eule.allocation import check_allocation
-from eule.bonds import analyze_bonds
+from eule.bestand.allocation import check_allocation
+from eule.bestand.bonds import analyze_bonds
+from eule.bestand.options import analyze_options
 from eule.config import EuleConfig
 from eule.models import PortfolioSnapshot
-from eule.options import analyze_options
 
 
 @dataclass

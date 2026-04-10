@@ -2,7 +2,7 @@
 
 from datetime import date, timedelta
 
-from eule.bonds import analyze_bonds, _compute_next_coupon
+from eule.bestand.bonds import analyze_bonds, _compute_next_coupon
 from eule.models import BondPosition, Position
 
 

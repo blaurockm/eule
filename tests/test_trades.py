@@ -3,7 +3,7 @@
 from datetime import date, datetime, timezone
 
 from eule.models import HaseTrade, Roundtrip
-from eule.trades import OPTION_MULTIPLIER, detect_roundtrips, fix_option_multiplier, get_open_trades, summarize_roundtrips
+from eule.bewertung.trades import OPTION_MULTIPLIER, detect_roundtrips, fix_option_multiplier, get_open_trades, summarize_roundtrips
 
 
 def _make_trade(

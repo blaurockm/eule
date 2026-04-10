@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import date
 from unittest.mock import MagicMock, patch
 
-from eule.aggregator import aggregate_positions, create_adapter
+from eule.bestand.aggregator import aggregate_positions, create_adapter
 from eule.config import (
     AllocationConfig,
     AlertsConfig,
@@ -82,7 +82,7 @@ positions:
 
         # Quotes mocken (kein current_price in YAML)
         monkeypatch.setattr(
-            "eule.aggregator.fetch_quotes",
+            "eule.bestand.aggregator.fetch_quotes",
             lambda tickers, ibkr_client=None: ({"GOLD": 120.0}, []),
         )
 
@@ -122,7 +122,7 @@ positions:
         )
 
         monkeypatch.setattr(
-            "eule.aggregator.fetch_quotes",
+            "eule.bestand.aggregator.fetch_quotes",
             lambda tickers, ibkr_client=None: ({"AAPL": 175.0}, []),
         )
         # FX: 1 USD = 0.90 EUR
@@ -184,7 +184,7 @@ positions:
         )
 
         monkeypatch.setattr(
-            "eule.aggregator.fetch_quotes",
+            "eule.bestand.aggregator.fetch_quotes",
             lambda tickers, ibkr_client=None: ({t: 150.0 for t in tickers}, []),
         )
 

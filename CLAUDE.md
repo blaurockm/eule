@@ -64,7 +64,9 @@ DB-Zugang über Umgebungsvariablen (in `~/eule/.env` auf systematic):
 - `eule briefing` — Gesamt-Briefing
 - `eule thesis` — Exit-Kriterien prüfen
 - `eule config` — Config init/show/check
-- `eule elster` — Performance-Reports (report, compare, portfolio)
+- `eule report` — Performance-Report (Sharpe, Drawdown, Win-Rate)
+- `eule compare` — Live vs. Baseline-Vergleich
+- `eule portfolio` — Portfolio-Korrelationsanalyse
 - `eule precheck` — Health-Check (Hase-APIs gegen Baselines)
 - `eule bot` — Wachtel Telegram Bot
 - `eule ep` — EP Scanner, Trades, Morning Brief + Email

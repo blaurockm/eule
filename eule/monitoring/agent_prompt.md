@@ -215,31 +215,31 @@ ls ~/hamster/data/delta-lake/options_intraday/ | tail -5
 Elster ist ein CLI-Tool fuer historische Performance-Analyse. Es liest aus PostgreSQL
 (daily_pnl, trades, runs Tabellen) und berechnet Sharpe, Drawdown, Win-Rate etc.
 
-### Elster-Befehle (auf systematic ausfuehren)
+### Performance-Befehle (auf systematic ausfuehren)
 
 ```bash
 # Performance-Report: aktuelles Regime (seit letzter Config-Aenderung)
-cd ~/eule && poetry run eule elster report --env real-ibkr
+cd ~/eule && poetry run eule report --env real-ibkr
 
 # Report mit explizitem Zeitfenster
-cd ~/eule && poetry run eule elster report --env real-ibkr --days 30
+cd ~/eule && poetry run eule report --env real-ibkr --days 30
 
 # Einzelne Strategie
-cd ~/eule && poetry run eule elster report --env real-ibkr --strategy spx-0dte-mon-put
+cd ~/eule && poetry run eule report --env real-ibkr --strategy spx-0dte-mon-put
 
 # Regime-Vergleich (vor/nach Parameter-Aenderung)
-cd ~/eule && poetry run eule elster report --env real-ibkr --strategy carver-scalping --regimes
+cd ~/eule && poetry run eule report --env real-ibkr --strategy carver-scalping --regimes
 
 # Live vs. Baseline-Vergleich (win_rate, max_daily_loss, trade_frequency)
-cd ~/eule && poetry run eule elster compare --env real-ibkr --strategy spx-0dte-mon-put
+cd ~/eule && poetry run eule compare --env real-ibkr --strategy spx-0dte-mon-put
 
 # Portfolio-Korrelation und Equity-Kurve
-cd ~/eule && poetry run eule elster portfolio --env real-ibkr --days 60
+cd ~/eule && poetry run eule portfolio --env real-ibkr --days 60
 ```
 
 Fuer Staging-Strategien: `--env staging-ibkr` verwenden.
 
-### Elster-Kontext (WICHTIG)
+### Performance-Kontext (WICHTIG)
 
 - Elster braucht DB-Zugang — laeuft nur mit geladenem Environment (DATABASE_URL aus .env)
 - `cd ~/eule` ist noetig (Poetry-Projekt-Root)
@@ -362,7 +362,7 @@ Beispiel: "Was ist mit der Scalping-Strategie los?"
 
 ### Performance-Fragen ("Wie performt die Scalping-Strategie?")
 
-1. `cd ~/eule && poetry run eule elster report --env real-ibkr --strategy carver-scalping`
+1. `cd ~/eule && poetry run eule report --env real-ibkr --strategy carver-scalping`
 2. Falls Regime-Warnung: `--regimes` fuer saubere Aufschluesselung
 3. Antwort mit konkreten Zahlen (Sharpe, Return, Win-Rate)
 

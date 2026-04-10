@@ -1,6 +1,6 @@
 """Tests fuer eule/allocation.py."""
 
-from eule.allocation import check_allocation, AllocationCheck, ConcentrationAlert
+from eule.bestand.allocation import check_allocation, AllocationCheck, ConcentrationAlert
 from eule.config import AllocationConfig, AllocationTarget
 from eule.models import PortfolioSnapshot, Position
 

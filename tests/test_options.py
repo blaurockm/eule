@@ -3,7 +3,7 @@
 from datetime import date, timedelta
 
 from eule.models import OptionPosition, Position
-from eule.options import analyze_options
+from eule.bestand.options import analyze_options
 
 
 def _make_option(days_to_expiry=30, sold_premium=245.0, current_value=120.0, **kw) -> OptionPosition:
