@@ -59,6 +59,7 @@ _NAV_ITEMS = [
     ("/positions", "Positionen"),
     ("/options", "Optionen"),
     ("/allocation", "Allokation"),
+    ("/performance", "Performance"),
     ("/schedule", "Schedule"),
     ("/precheck", "Precheck"),
     ("/ep", "EP-Trades"),
@@ -418,6 +419,118 @@ def _page_ep() -> str:
     return _page("EP-Trades", content, "/ep")
 
 
+def _page_performance() -> str:
+    try:
+        import psycopg
+
+        from eule.db import get_db_url
+        from eule.elster.data import (
+            list_strategies,
+            load_baseline,
+            load_daily_pnl,
+            load_trades,
+            nav_to_returns,
+        )
+        from eule.elster.metrics import calculate_metrics
+    except ImportError as e:
+        return _page("Performance", _error_block(f"Elster nicht verfuegbar: {e}"), "/performance")
+
+    runtime_names = {
+        "real-ibkr": "ibkr-one",
+        "real2-ibkr": "ibkr-two",
+        "staging-ibkr": "ibkr-paper",
+        "staging-hl": "hl-paper",
+    }
+
+    try:
+        db_url = get_db_url("real-ibkr")
+        conn = psycopg.connect(db_url, autocommit=True)
+    except Exception as e:
+        return _page("Performance", _error_block(f"DB-Verbindung: {e}"), "/performance")
+
+    content = ""
+    try:
+        for env_name, runtime_name in runtime_names.items():
+            strategies = list_strategies(conn, runtime_name)
+            if not strategies:
+                continue
+
+            df = load_daily_pnl(conn, runtime_name, days=30)
+            if df.empty:
+                content += f'<h2>{env_name}</h2><p class="dim">Keine Daten (30d)</p>'
+                continue
+
+            returns_df = nav_to_returns(df)
+            if returns_df.empty:
+                content += f'<h2>{env_name}</h2><p class="dim">Zu wenig Daten</p>'
+                continue
+
+            rows = []
+            warnings = []
+            for strat in strategies:
+                if strat not in returns_df.columns:
+                    continue
+
+                m = calculate_metrics(returns_df[strat])
+                trades_df = load_trades(conn, runtime_name, days=30, strategy_key=strat)
+
+                ret = _color(m.total_return * 100, fmt="+.1f")
+                sharpe = f"{m.sharpe_ratio:.2f}" if m.sharpe_ratio != 0 else "—"
+                mdd = f"{m.max_drawdown * 100:.1f}%"
+                wr = f"{m.win_rate * 100:.0f}%"
+                pf_val = m.profit_factor
+                pf = f"{pf_val:.1f}" if pf_val > 0 else "—"
+                pf_cls = "red" if 0 < pf_val < 1.0 else ""
+
+                rows.append([
+                    f'<span class="bold">{strat}</span>',
+                    f"{ret}%",
+                    sharpe, mdd, wr,
+                    f'<span class="{pf_cls}">{pf}</span>',
+                    str(len(trades_df)) if trades_df is not None else "—",
+                ])
+
+                # Baseline-Warnungen
+                baseline = load_baseline(strat)
+                if baseline:
+                    bl_wr = baseline.get("metrics", {}).get("win_rate", {})
+                    if bl_wr and bl_wr.get("warn_below") and m.win_rate < bl_wr["warn_below"]:
+                        warnings.append(f'{strat}: WR {m.win_rate:.0%} &lt; warn {bl_wr["warn_below"]:.0%}')
+                if 0 < pf_val < 1.0:
+                    warnings.append(f"{strat}: PF {pf_val:.1f} &lt; 1.0")
+
+            # Portfolio-Zeile
+            avail = [c for c in returns_df.columns if c in strategies]
+            if len(avail) > 1:
+                port_ret = returns_df[avail].sum(axis=1)
+                pm = calculate_metrics(port_ret)
+                rows.append([
+                    '<span class="bold">PORTFOLIO</span>',
+                    f"{_color(pm.total_return * 100, fmt='+.1f')}%",
+                    f"{pm.sharpe_ratio:.2f}" if pm.sharpe_ratio != 0 else "—",
+                    f"{pm.max_drawdown * 100:.1f}%",
+                    "", "", "",
+                ])
+
+            content += f"<h2>{env_name} (30 Tage)</h2>"
+            content += _table(
+                ["Strategie", "Return", "Sharpe", "MaxDD", "WR", "PF", "Trades"],
+                rows,
+                ["l", "r", "r", "r", "r", "r", "r"],
+            )
+
+            if warnings:
+                content += '<div class="error">' + "<br>".join(f"⚠ {w}" for w in warnings) + "</div>"
+
+    finally:
+        conn.close()
+
+    if not content:
+        content = '<p class="dim">Keine Performance-Daten verfuegbar.</p>'
+
+    return _page("Performance", content, "/performance")
+
+
 # ---------------------------------------------------------------------------
 # HTTP Server
 # ---------------------------------------------------------------------------
@@ -427,6 +540,7 @@ ROUTES: dict[str, callable] = {
     "/positions": _page_positions,
     "/options": _page_options,
     "/allocation": _page_allocation,
+    "/performance": _page_performance,
     "/schedule": _page_schedule,
     "/precheck": _page_precheck,
     "/ep": _page_ep,
