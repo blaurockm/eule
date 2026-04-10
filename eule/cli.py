@@ -34,6 +34,7 @@ app.command(name="envs")(bewertung.list_envs)
 app.command()(bewertung.report)
 app.command()(bewertung.compare)
 app.command(name="portfolio")(bewertung.portfolio_report)
+app.command(name="pnl-override")(bewertung.pnl_override)
 
 # ── Pipeline: Was kommt als naechstes? ───────────────
 app.add_typer(pipeline.ep_app)
