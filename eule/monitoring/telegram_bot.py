@@ -62,7 +62,6 @@ def _hase_root(env: str | None = None) -> Path:
         return Path.home() / "staging"
     return Path.home() / "hase"
 
-PRECHECK_INTERVAL = 15 * 60  # 15 minutes
 TELEGRAM_POLL_TIMEOUT = 30
 MAX_MESSAGE_LENGTH = 4096
 
@@ -1213,191 +1212,6 @@ def _prefetch_api_data() -> str:
     return "\n".join(lines)
 
 
-# --- Scheduler Thread ---
-
-
-class Scheduler(threading.Thread):
-    """Periodic precheck and daily summary scheduler."""
-
-    def __init__(self, alert_callback):
-        super().__init__(daemon=True, name="scheduler")
-        self.alert_callback = alert_callback
-        self.running = True
-        self.last_precheck = 0.0
-        self.last_daily_summary_date: str | None = None
-        self.last_weekly_report_date: str | None = None
-
-    def run(self):
-        log.info("Scheduler started")
-        # Wait 30s before first check to let everything initialize
-        time_module.sleep(30)
-
-        while self.running:
-            try:
-                now = time_module.time()
-
-                # Periodic precheck
-                if now - self.last_precheck >= PRECHECK_INTERVAL:
-                    self._run_precheck()
-                    self.last_precheck = now
-
-                # Daily summary (21:00 Berlin, weekdays)
-                self._check_daily_summary()
-
-                # Weekly performance report (Friday 21:15 Berlin)
-                self._check_weekly_report()
-
-            except Exception as e:
-                log.error(f"Scheduler error: {e}")
-
-            time_module.sleep(30)
-
-    def _run_precheck(self):
-        log.info("Running scheduled precheck")
-        exit_code, output = run_precheck()
-        result_label = {0: "OK", 1: "ANOMALIES", 2: "SUMMARY"}.get(exit_code, "?")
-        log.info(f"Precheck result: exit_code={exit_code} ({result_label}), output_lines={output.count(chr(10)) + 1}")
-
-        # Ping dead-man's switch
-        if HEALTHCHECK_URL:
-            try:
-                requests.get(HEALTHCHECK_URL, timeout=5)
-            except Exception:
-                pass
-
-        if exit_code == 1 and not is_muted():
-            # Parse anomaly lines
-            anomaly_lines = []
-            for line in output.split("\n"):
-                line = line.strip()
-                if not line or line == "ANOMALIES DETECTED:":
-                    continue
-                if re.match(r"\[(CRITICAL|WARNING)\]", line):
-                    anomaly_lines.append(line)
-
-            # Only alert if the anomaly set changed (new problem or resolved)
-            if anomaly_lines and anomalies_changed(anomaly_lines):
-                alert_text = "\n".join(anomaly_lines)
-                n = len(anomaly_lines)
-                # Short notification to Telegram (not the full analysis)
-                self.alert_callback(f"{n} Anomalie(n) erkannt:\n{alert_text}\n\n(Analyse per Email)")
-                # Full Claude analysis via email only
-                if get_claude_failures() < 3:
-                    try:
-                        api_context = _prefetch_api_data()
-                        full_context = f"Precheck-Anomalien:\n{alert_text}\n\nVoller Precheck:\n{output}\n\n{api_context}"
-                        analysis = invoke_claude(
-                            full_context,
-                            "Anomalien wurden erkannt. "
-                            "ZUERST: Hole Daten per Bash (curl localhost APIs, grep in Logfiles). "
-                            "Du bist auf dem Server — nutze Bash direkt, KEIN ssh. "
-                            "DANN: Analysiere die Ursache und liefere konkrete Loesungsvorschlaege. "
-                            "Format: Kurze Diagnose pro Problem, dann konkreter Fix-Vorschlag. "
-                            "Kein Smalltalk, nur Diagnose + Aktion.",
-                        )
-                        tz = ZoneInfo("Europe/Berlin")
-                        ts = datetime.now(tz).strftime("%Y-%m-%d %H:%M")
-                        email_body = _report_to_html(
-                            f"Anomalien:\n{alert_text}\n\n---\n\nAnalyse:\n{analysis}",
-                            title=f"Wachtel Anomalie-Analyse — {ts}",
-                        )
-                        send_email(f"Wachtel: {n} Anomalie(n) — {ts}", email_body, html=True)
-                        reset_claude_failures()
-                    except Exception:
-                        record_claude_failure()
-
-        elif exit_code == 0:
-            # Only clear on genuine OK — not on SUMMARY (exit_code=2) or muted,
-            # otherwise the same anomalies get re-reported as "new" next cycle
-            clear_anomaly_state()
-
-    def _check_daily_summary(self):
-        tz_berlin = ZoneInfo("Europe/Berlin")
-        now = datetime.now(tz_berlin)
-        today_key = now.strftime("%Y-%m-%d")
-
-        # Only on weekdays, at 21:00
-        if now.weekday() > 4:
-            return
-        if now.hour != 21:
-            return
-        if now.minute > 15:
-            return
-        if self.last_daily_summary_date == today_key:
-            return
-
-        self.last_daily_summary_date = today_key
-        log.info("Running daily summary")
-
-        _, precheck_output = run_precheck()
-
-        # Pre-fetch all API data so Claude doesn't need to curl (saves ~60s)
-        api_context = _prefetch_api_data()
-        full_context = f"Precheck:\n{precheck_output}\n\n{api_context}"
-
-        tz = ZoneInfo("Europe/Berlin")
-        date_str = datetime.now(tz).strftime("%Y-%m-%d")
-
-        if get_claude_failures() < 3:
-            try:
-                summary = invoke_claude(
-                    full_context,
-                    "Erstelle die taegliche Zusammenfassung (Daily Summary). "
-                    "Alle API-Daten sind bereits im Kontext — du musst KEINE curl-Befehle ausfuehren. "
-                    "Fasse Status und PnL zusammen. Kurz und praegnant.",
-                )
-                self.alert_callback(f"Daily Summary:\n{summary}")
-                # Also send via email as HTML
-                email_body = _report_to_html(summary, title=f"Wachtel Daily Summary — {date_str}")
-                send_email(f"Wachtel Daily Summary — {date_str}", email_body, html=True)
-                reset_claude_failures()
-            except Exception:
-                record_claude_failure()
-                fallback = f"Daily Summary (ohne Claude):\n{precheck_output}"
-                self.alert_callback(fallback)
-                email_body = _report_to_html(fallback, title=f"Wachtel Daily Summary — {date_str}")
-                send_email(f"Wachtel Daily Summary — {date_str}", email_body, html=True)
-        else:
-            fallback = f"Daily Summary (ohne Claude):\n{precheck_output}"
-            self.alert_callback(fallback)
-            email_body = _report_to_html(fallback, title=f"Wachtel Daily Summary — {date_str}")
-            send_email(f"Wachtel Daily Summary — {date_str}", email_body, html=True)
-
-    def _check_weekly_report(self):
-        tz_berlin = ZoneInfo("Europe/Berlin")
-        now = datetime.now(tz_berlin)
-        week_key = now.strftime("%Y-W%W")
-
-        # Only on Friday, at 21:15 (after daily summary at 21:00)
-        if now.weekday() != 4:
-            return
-        if now.hour != 21 or now.minute < 15 or now.minute > 30:
-            return
-        if self.last_weekly_report_date == week_key:
-            return
-
-        self.last_weekly_report_date = week_key
-        log.info("Running weekly performance report")
-
-        try:
-            report_text = handle_report("")
-            self.alert_callback(f"Weekly Performance Report:\n\n{report_text}")
-
-            # Also send via email
-            tz_berlin = ZoneInfo("Europe/Berlin")
-            date_str = datetime.now(tz_berlin).strftime("%Y-%m-%d")
-            send_email(
-                subject=f"Wachtel Weekly Report {date_str}",
-                body=_report_to_html(report_text),
-                html=True,
-            )
-        except Exception as e:
-            log.error(f"Weekly report failed: {e}")
-
-    def stop(self):
-        self.running = False
-
-
 # --- Main Bot ---
 
 
@@ -1417,12 +1231,25 @@ def main():
     poller = TelegramPoller(msg_queue, cb_queue)
     poller.start()
 
-    # Start scheduler
-    def alert_callback(text: str):
-        send_message(text)
+    # Start scheduler (config-getrieben aus schedule.yaml)
+    from eule.monitoring.schedule_config import ScheduleConfigError, load_schedule
+    from eule.monitoring.scheduler import Scheduler
 
-    scheduler = Scheduler(alert_callback)
-    scheduler.start()
+    try:
+        schedule_config = load_schedule()
+    except ScheduleConfigError as e:
+        log.warning(f"Schedule-Config nicht geladen: {e} — Scheduler deaktiviert")
+        schedule_config = None
+
+    if schedule_config:
+        scheduler = Scheduler(
+            schedule_config,
+            alert_callback=send_message,
+            email_callback=send_email,
+        )
+        scheduler.start()
+    else:
+        scheduler = None
 
     send_message("Wachtel gestartet. /status fuer aktuellen Check.")
     log.info("Wachtel running")
@@ -1536,7 +1363,8 @@ def main():
         log.info("Shutting down...")
     finally:
         poller.stop()
-        scheduler.stop()
+        if scheduler:
+            scheduler.stop()
         log.info("Wachtel stopped")
 
 

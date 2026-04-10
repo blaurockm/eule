@@ -284,6 +284,12 @@ def init_config() -> list[str]:
         CONFIG_PATH.write_text(CONFIG_TEMPLATE)
         created.append(str(CONFIG_PATH))
 
+    # schedule.yaml
+    from eule.monitoring.schedule_config import SCHEDULE_PATH, SCHEDULE_TEMPLATE
+    if not SCHEDULE_PATH.exists():
+        SCHEDULE_PATH.write_text(SCHEDULE_TEMPLATE)
+        created.append(str(SCHEDULE_PATH))
+
     # .env Templates
     for filename, content in ENV_TEMPLATES.items():
         path = EULE_DIR / filename

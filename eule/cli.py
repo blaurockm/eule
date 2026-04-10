@@ -40,6 +40,7 @@ app.add_typer(pipeline.ep_app)
 
 # ── Betrieb: Laeuft alles? ──────────────────────────
 app.add_typer(betrieb.config_app)
+app.add_typer(betrieb.schedule_app)
 app.command()(betrieb.precheck)
 app.command()(betrieb.bot)
 
