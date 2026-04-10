@@ -157,65 +157,174 @@ def _format_cron_human(cron: str) -> str:
     return f"{dow_str} {hour}:{minute.zfill(2)}"
 
 
-@schedule_app.command(name="list")
-def schedule_list(
-    output_format: str = typer.Option("markdown", "--format", help="Output: markdown oder json"),
-) -> None:
-    """Alle geplanten Jobs anzeigen."""
+def _build_schedule_rows() -> tuple[str, list[dict]]:
+    """Bereitet Schedule-Daten auf. Gibt (timezone, rows) zurueck."""
+    from datetime import timedelta
     from zoneinfo import ZoneInfo
 
-    from rich.table import Table
-
-    from eule.monitoring.schedule_config import ScheduleConfigError, load_schedule
+    from eule.monitoring.schedule_config import load_schedule
     from eule.monitoring.scheduler import cron_next_fire, load_state
 
-    try:
-        config = load_schedule()
-    except ScheduleConfigError as e:
-        console.print(f"[red]Fehler:[/red] {e}")
-        raise typer.Exit(1)
-
+    config = load_schedule()
     state = load_state()
     tz = ZoneInfo(config.timezone)
     now = datetime.now(tz)
 
-    if output_format == "json":
-        data = []
-        for name, job in config.jobs.items():
-            job_state = state.get(name, {})
-            next_fire = None
-            if job.cron:
-                nf = cron_next_fire(job.cron, now, tz)
-                if nf:
-                    next_fire = nf.isoformat(timespec="minutes")
-            elif job.interval_minutes:
-                last_run = job_state.get("last_run")
-                if last_run:
-                    from datetime import datetime as dt
-                    try:
-                        lr = dt.fromisoformat(last_run)
-                        from datetime import timedelta
-                        next_fire = (lr + timedelta(minutes=job.interval_minutes)).isoformat(
-                            timespec="minutes"
-                        )
-                    except ValueError:
-                        pass
+    rows = []
+    for name, job in config.jobs.items():
+        job_state = state.get(name, {})
 
-            data.append({
-                "name": name,
-                "action": job.action,
-                "function": job.function or None,
-                "unit": job.unit or None,
-                "schedule": job.cron or f"alle {job.interval_minutes}min",
-                "enabled": job.enabled,
-                "last_run": job_state.get("last_run"),
-                "last_status": job_state.get("last_status"),
-                "next_fire": next_fire,
-            })
-        output_json(data)
+        # Schedule
+        schedule_str = _format_cron_human(job.cron) if job.cron else f"alle {job.interval_minutes}min"
+
+        # Action
+        action_str = job.function if job.action == "internal" else f"systemd:{job.unit}"
+
+        # Last run
+        last_run_raw = job_state.get("last_run")
+        last_status = job_state.get("last_status", "")
+        last_run_fmt = "—"
+        if last_run_raw:
+            try:
+                last_run_fmt = datetime.fromisoformat(last_run_raw).strftime("%d.%m. %H:%M")
+            except ValueError:
+                last_run_fmt = last_run_raw
+
+        # Next fire
+        next_fire_fmt = "—"
+        next_fire_iso = None
+        if not job.enabled:
+            pass
+        elif job.cron:
+            nf = cron_next_fire(job.cron, now, tz)
+            if nf:
+                next_fire_fmt = nf.strftime("%d.%m. %H:%M")
+                next_fire_iso = nf.isoformat(timespec="minutes")
+        elif job.interval_minutes and last_run_raw:
+            try:
+                lr_dt = datetime.fromisoformat(last_run_raw)
+                nf_dt = lr_dt + timedelta(minutes=job.interval_minutes)
+                next_fire_fmt = nf_dt.strftime("%d.%m. %H:%M")
+                next_fire_iso = nf_dt.isoformat(timespec="minutes")
+            except ValueError:
+                next_fire_fmt = f"+{job.interval_minutes}min"
+        elif job.interval_minutes:
+            next_fire_fmt = "nach Start"
+
+        rows.append({
+            "name": name,
+            "action": action_str,
+            "schedule": schedule_str,
+            "enabled": job.enabled,
+            "last_run": last_run_fmt,
+            "last_run_iso": last_run_raw,
+            "last_status": last_status,
+            "next_fire": next_fire_fmt,
+            "next_fire_iso": next_fire_iso,
+            "cron": job.cron or None,
+            "interval_minutes": job.interval_minutes or None,
+            "function": job.function or None,
+            "unit": job.unit or None,
+        })
+
+    return config.timezone, rows
+
+
+def _render_html(timezone: str, rows: list[dict]) -> str:
+    """Erzeugt eine selbststaendige HTML-Seite mit dem Schedule."""
+    now_str = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    table_rows = []
+    for r in rows:
+        status_class = ""
+        if r["last_status"] == "ok":
+            status_class = "ok"
+        elif r["last_status"] and r["last_status"] != "ok":
+            status_class = "error"
+
+        enabled = "ja" if r["enabled"] else "nein"
+        enabled_class = "" if r["enabled"] else "disabled"
+
+        last_run = r["last_run"]
+        if status_class == "error":
+            last_run = f'{last_run} ({r["last_status"]})'
+
+        table_rows.append(
+            f'<tr class="{enabled_class}">'
+            f'<td class="name">{r["name"]}</td>'
+            f'<td>{r["action"]}</td>'
+            f'<td>{r["schedule"]}</td>'
+            f'<td class="center">{enabled}</td>'
+            f'<td class="{status_class}">{last_run}</td>'
+            f'<td>{r["next_fire"]}</td>'
+            f"</tr>"
+        )
+
+    return f"""\
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wachtel Schedule</title>
+<style>
+  body {{ font-family: -apple-system, system-ui, sans-serif; margin: 2rem; background: #0d1117; color: #c9d1d9; }}
+  h1 {{ font-size: 1.4rem; color: #58a6ff; margin-bottom: 0.3rem; }}
+  .meta {{ color: #8b949e; font-size: 0.85rem; margin-bottom: 1.5rem; }}
+  table {{ border-collapse: collapse; width: 100%; font-size: 0.9rem; }}
+  th {{ text-align: left; padding: 0.6rem 1rem; background: #161b22; color: #8b949e;
+       font-weight: 600; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em;
+       border-bottom: 1px solid #30363d; }}
+  td {{ padding: 0.5rem 1rem; border-bottom: 1px solid #21262d; }}
+  tr:hover {{ background: #161b22; }}
+  .name {{ font-weight: 600; color: #f0f6fc; }}
+  .center {{ text-align: center; }}
+  .ok {{ color: #3fb950; }}
+  .error {{ color: #f85149; }}
+  .disabled {{ opacity: 0.4; }}
+</style>
+</head>
+<body>
+<h1>Wachtel Schedule</h1>
+<div class="meta">Timezone: {timezone} &middot; Stand: {now_str}</div>
+<table>
+<thead>
+<tr><th>Job</th><th>Aktion</th><th>Zeitplan</th><th>Aktiv</th><th>Letzter Lauf</th><th>Naechster Lauf</th></tr>
+</thead>
+<tbody>
+{"".join(table_rows)}
+</tbody>
+</table>
+</body>
+</html>"""
+
+
+@schedule_app.command(name="list")
+def schedule_list(
+    output_format: str = typer.Option("markdown", "--format", help="Output: markdown, json oder html"),
+) -> None:
+    """Alle geplanten Jobs anzeigen."""
+    from eule.monitoring.schedule_config import ScheduleConfigError
+
+    try:
+        timezone, rows = _build_schedule_rows()
+    except ScheduleConfigError as e:
+        console.print(f"[red]Fehler:[/red] {e}")
+        raise typer.Exit(1)
+
+    if output_format == "json":
+        output_json(rows)
         return
 
-    table = Table(title=f"Schedule (timezone: {config.timezone})")
+    if output_format == "html":
+        import typer as t
+        t.echo(_render_html(timezone, rows))
+        return
+
+    # Default: Rich table
+    from rich.table import Table
+
+    table = Table(title=f"Schedule (timezone: {timezone})")
     table.add_column("Job", style="bold")
     table.add_column("Aktion")
     table.add_column("Zeitplan")
@@ -223,59 +332,17 @@ def schedule_list(
     table.add_column("Letzter Lauf")
     table.add_column("Naechster Lauf")
 
-    for name, job in config.jobs.items():
-        job_state = state.get(name, {})
+    for r in rows:
+        enabled_str = "[green]ja[/green]" if r["enabled"] else "[dim]nein[/dim]"
 
-        # Schedule
-        if job.cron:
-            schedule_str = _format_cron_human(job.cron)
-        else:
-            schedule_str = f"alle {job.interval_minutes}min"
+        last_run = r["last_run"]
+        if r["last_status"] == "ok":
+            last_run = f"[green]{last_run}[/green]"
+        elif r["last_status"] and r["last_status"] != "ok":
+            last_run = f'[red]{last_run} ({r["last_status"]})[/red]'
 
-        # Action
-        if job.action == "internal":
-            action_str = job.function
-        else:
-            action_str = f"systemd:{job.unit}"
+        next_fire = r["next_fire"] if r["enabled"] else "[dim]—[/dim]"
 
-        # Enabled
-        enabled_str = "[green]ja[/green]" if job.enabled else "[dim]nein[/dim]"
-
-        # Last run
-        last_run = job_state.get("last_run", "—")
-        last_status = job_state.get("last_status", "")
-        if last_run != "—":
-            try:
-                lr_dt = datetime.fromisoformat(last_run)
-                last_run = lr_dt.strftime("%d.%m. %H:%M")
-                if last_status == "ok":
-                    last_run = f"[green]{last_run}[/green]"
-                elif last_status and last_status != "ok":
-                    last_run = f"[red]{last_run} ({last_status})[/red]"
-            except ValueError:
-                pass
-
-        # Next fire
-        next_fire = "—"
-        if not job.enabled:
-            next_fire = "[dim]—[/dim]"
-        elif job.cron:
-            nf = cron_next_fire(job.cron, now, tz)
-            if nf:
-                next_fire = nf.strftime("%d.%m. %H:%M")
-        elif job.interval_minutes:
-            lr_raw = job_state.get("last_run")
-            if lr_raw:
-                try:
-                    lr_dt = datetime.fromisoformat(lr_raw)
-                    from datetime import timedelta
-                    nf_dt = lr_dt + timedelta(minutes=job.interval_minutes)
-                    next_fire = nf_dt.strftime("%d.%m. %H:%M")
-                except ValueError:
-                    next_fire = f"+{job.interval_minutes}min"
-            else:
-                next_fire = "nach Start"
-
-        table.add_row(name, action_str, schedule_str, enabled_str, last_run, next_fire)
+        table.add_row(r["name"], r["action"], r["schedule"], enabled_str, last_run, next_fire)
 
     console.print(table)

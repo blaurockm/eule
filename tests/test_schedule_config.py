@@ -166,5 +166,5 @@ class TestLoadSchedule:
         cfg = load_schedule(schedule_file)
         assert len(cfg.jobs) == 8
         assert cfg.jobs["precheck"].interval_minutes == 15
-        assert cfg.jobs["daily_summary"].cron == "0 21 * * 0-4"
+        assert cfg.jobs["daily_summary"].cron == "45 22 * * 0-4"
         assert cfg.jobs["hamster_ibkr"].unit == "hamster-ibkr.service"

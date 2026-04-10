@@ -137,14 +137,14 @@ jobs:
   daily_summary:
     action: internal
     function: daily_summary
-    cron: "0 21 * * 0-4"          # Mo-Fr 21:00
+    cron: "45 22 * * 0-4"          # Mo-Fr 22:45
     notify: [telegram, email]
     on_error: [telegram, email]
 
   weekly_report:
     action: internal
     function: weekly_report
-    cron: "15 21 * * 4"           # Fr 21:15
+    cron: "0 23 * * 4"            # Fr 23:00
     notify: [telegram, email]
     on_error: [telegram, email]
 
