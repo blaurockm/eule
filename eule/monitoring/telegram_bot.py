@@ -696,11 +696,14 @@ def handle_report(args: str) -> str:
         import psycopg
 
         from eule.elster.data import (
+            filter_trading_days,
+            get_trading_weekdays,
             list_strategies,
             load_baseline,
             load_daily_pnl,
             load_trades,
             nav_to_returns,
+            trading_periods_per_year,
         )
         from eule.elster.metrics import calculate_metrics
     except ImportError as e:
@@ -743,7 +746,14 @@ def handle_report(args: str) -> str:
             for strat in strategies:
                 if strat not in returns_df.columns:
                     continue
-                m = calculate_metrics(returns_df[strat])
+                # Returns auf konfigurierte Trading-Tage filtern
+                strat_returns = returns_df[strat]
+                weekdays = get_trading_weekdays(strat)
+                ppy = 252
+                if weekdays:
+                    strat_returns = filter_trading_days(strat_returns, weekdays)
+                    ppy = trading_periods_per_year(weekdays)
+                m = calculate_metrics(strat_returns, periods_per_year=ppy)
                 trades_df = load_trades(conn, runtime_name, days=7, strategy_key=strat)
                 ret = f"{m.total_return * 100:+.1f}%"
                 sharpe = f"{m.sharpe_ratio:.2f}" if m.sharpe_ratio != 0 else "—"

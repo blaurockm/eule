@@ -425,11 +425,14 @@ def _page_performance() -> str:
 
         from eule.db import get_db_url
         from eule.elster.data import (
+            filter_trading_days,
+            get_trading_weekdays,
             list_strategies,
             load_baseline,
             load_daily_pnl,
             load_trades,
             nav_to_returns,
+            trading_periods_per_year,
         )
         from eule.elster.metrics import calculate_metrics
     except ImportError as e:
@@ -467,11 +470,24 @@ def _page_performance() -> str:
 
             rows = []
             warnings = []
+            # Trading-Wochentage pro Strategie cachen
+            strat_weekdays: dict[str, list[int] | None] = {}
+            for strat in strategies:
+                strat_weekdays[strat] = get_trading_weekdays(strat)
+
             for strat in strategies:
                 if strat not in returns_df.columns:
                     continue
 
-                m = calculate_metrics(returns_df[strat])
+                # Returns auf konfigurierte Trading-Tage filtern
+                strat_returns = returns_df[strat]
+                weekdays = strat_weekdays[strat]
+                ppy = 252
+                if weekdays:
+                    strat_returns = filter_trading_days(strat_returns, weekdays)
+                    ppy = trading_periods_per_year(weekdays)
+
+                m = calculate_metrics(strat_returns, periods_per_year=ppy)
                 trades_df = load_trades(conn, runtime_name, days=30, strategy_key=strat)
 
                 ret = _color(m.total_return * 100, fmt="+.1f")
@@ -538,11 +554,16 @@ def _page_performance() -> str:
                     pnl_rows = []
                     for dt in sorted(pivot.index):
                         row_data = pivot.loc[dt]
+                        dow = dt.weekday() if hasattr(dt, 'weekday') else dt.timetuple().tm_wday
                         cells = [dt.strftime("%a %d.%m.")]
                         day_total = 0.0
                         for s in strat_cols:
+                            weekdays = strat_weekdays.get(s)
+                            is_trading_day = weekdays is None or dow in weekdays
                             val = row_data.get(s, 0.0)
-                            if val is None or (hasattr(val, '__class__') and val.__class__.__name__ == 'float' and val != val):
+                            if not is_trading_day:
+                                cells.append('<span class="dim">·</span>')
+                            elif val is None or (isinstance(val, float) and val != val):
                                 cells.append('<span class="dim">—</span>')
                             else:
                                 val = float(val)

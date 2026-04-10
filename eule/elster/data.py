@@ -190,6 +190,39 @@ def nav_to_returns(df: pd.DataFrame) -> pd.DataFrame:
     return returns
 
 
+def get_trading_weekdays(strategy_name: str) -> list[int] | None:
+    """Gibt die Wochentage zurueck an denen die Strategie tradet (0=Mo).
+
+    Liest entry.weekdays aus der Baseline-YAML. Gibt None zurueck
+    wenn keine Baseline oder kein Entry-Schedule definiert ist.
+    """
+    baseline = load_baseline(strategy_name)
+    if not baseline:
+        return None
+    entry = baseline.get("entry", {})
+    weekdays = entry.get("weekdays")
+    if weekdays and isinstance(weekdays, list):
+        return weekdays
+    return None
+
+
+def filter_trading_days(returns: pd.Series, weekdays: list[int]) -> pd.Series:
+    """Filtert eine Return-Serie auf die konfigurierten Trading-Tage.
+
+    Entfernt Tage an denen die Strategie nicht tradet (Return ≈ 0),
+    damit Win Rate, Sharpe etc. korrekt berechnet werden.
+    """
+    if hasattr(returns.index, "weekday"):
+        # DatetimeIndex oder date Index
+        return returns[returns.index.weekday.isin(weekdays)]
+    return returns
+
+
+def trading_periods_per_year(weekdays: list[int]) -> int:
+    """Berechnet die Anzahl Trading-Perioden pro Jahr basierend auf den Wochentagen."""
+    return len(weekdays) * 52
+
+
 def list_strategies(conn: "psycopg.Connection", runtime_name: str) -> list[str]:
     """Gibt alle strategy_keys zurueck die in daily_pnl fuer diesen runtime existieren."""
     sql = """
