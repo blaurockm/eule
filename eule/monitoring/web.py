@@ -52,6 +52,9 @@ tr:hover { background: #161b22; }
 .cards { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
 .error { background: #3d1214; border-color: #f85149; color: #f85149;
          padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
+details { margin-bottom: 0.3rem; }
+summary { cursor: pointer; padding: 0.4rem 0; font-size: 0.9rem; }
+summary:hover { color: #58a6ff; }
 """
 
 _NAV_ITEMS = [
@@ -538,42 +541,39 @@ def _page_performance() -> str:
             if warnings:
                 content += '<div class="error">' + "<br>".join(f"⚠ {w}" for w in warnings) + "</div>"
 
-            # Tages-PnL Heatmap (14 Tage)
+            # Tages-PnL pro Strategie (14 Tage, nur Trading-Tage)
             pnl_df = load_daily_pnl(conn, runtime_name, days=14)
             if not pnl_df.empty and "pnl_net" in pnl_df.columns:
-                # Pivot: Zeilen=Datum, Spalten=Strategie
-                pivot = pnl_df.pivot_table(
-                    index="date", columns="strategy_key", values="pnl_net", aggfunc="sum",
-                )
-                if not pivot.empty:
-                    strat_cols = sorted(pivot.columns)
-                    # Spaltennamen kuerzen (max 12 Zeichen)
-                    short_names = [s[:12] for s in strat_cols]
-                    headers = ["Datum"] + short_names + ["Gesamt"]
-                    aligns = ["l"] + ["r"] * (len(strat_cols) + 1)
-                    pnl_rows = []
-                    for dt in sorted(pivot.index):
-                        row_data = pivot.loc[dt]
-                        dow = dt.weekday() if hasattr(dt, 'weekday') else dt.timetuple().tm_wday
-                        cells = [dt.strftime("%a %d.%m.")]
-                        day_total = 0.0
-                        for s in strat_cols:
-                            weekdays = strat_weekdays.get(s)
-                            is_trading_day = weekdays is None or dow in weekdays
-                            val = row_data.get(s, 0.0)
-                            if not is_trading_day:
-                                cells.append('<span class="dim">·</span>')
-                            elif val is None or (isinstance(val, float) and val != val):
-                                cells.append('<span class="dim">—</span>')
-                            else:
-                                val = float(val)
-                                day_total += val
-                                cells.append(_color(val, fmt="+,.0f"))
-                        cells.append(f"<strong>{_color(day_total, fmt='+,.0f')}</strong>")
-                        pnl_rows.append(cells)
+                content += f"<h2>{env_name} — Tages-PnL (14d)</h2>"
+                for strat in sorted(strategies):
+                    strat_pnl = pnl_df[pnl_df["strategy_key"] == strat].copy()
+                    if strat_pnl.empty:
+                        continue
 
-                    content += f"<h2>{env_name} — Tages-PnL (14d)</h2>"
-                    content += _table(headers, pnl_rows, aligns)
+                    weekdays = strat_weekdays.get(strat)
+                    if weekdays:
+                        strat_pnl = strat_pnl[
+                            pd.DatetimeIndex(strat_pnl["date"]).weekday.isin(weekdays)
+                        ]
+                    if strat_pnl.empty:
+                        continue
+
+                    total = strat_pnl["pnl_net"].sum()
+                    n_days = len(strat_pnl)
+                    pnl_rows = []
+                    for _, row in strat_pnl.sort_values("date", ascending=False).iterrows():
+                        dt = row["date"]
+                        val = float(row["pnl_net"])
+                        day_str = dt.strftime("%a %d.%m.")
+                        pnl_rows.append([day_str, _color(val, fmt="+,.0f")])
+
+                    header_text = (
+                        f'<span class="bold">{strat}</span> '
+                        f'<span class="dim">({n_days}d, gesamt: {_color(total, fmt="+,.0f")})</span>'
+                    )
+                    content += f"<details><summary>{header_text}</summary>"
+                    content += _table(["Datum", "PnL"], pnl_rows, ["l", "r"])
+                    content += "</details>"
 
     finally:
         conn.close()

@@ -212,10 +212,9 @@ def filter_trading_days(returns: pd.Series, weekdays: list[int]) -> pd.Series:
     Entfernt Tage an denen die Strategie nicht tradet (Return ≈ 0),
     damit Win Rate, Sharpe etc. korrekt berechnet werden.
     """
-    if hasattr(returns.index, "weekday"):
-        # DatetimeIndex oder date Index
-        return returns[returns.index.weekday.isin(weekdays)]
-    return returns
+    idx = pd.DatetimeIndex(returns.index)
+    mask = idx.weekday.isin(weekdays)
+    return returns[mask]
 
 
 def trading_periods_per_year(weekdays: list[int]) -> int:
