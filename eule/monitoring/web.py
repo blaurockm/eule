@@ -543,20 +543,35 @@ def _page_performance() -> str:
             if warnings:
                 content += '<div class="error">' + "<br>".join(f"⚠ {w}" for w in warnings) + "</div>"
 
-            # Tages-PnL pro Strategie (14 Tage, nur Trading-Tage)
-            pnl_df = load_daily_pnl(conn, runtime_name, days=14)
-            if not pnl_df.empty and "pnl_net" in pnl_df.columns:
-                content += f"<h2>{env_name} — Tages-PnL (14d)</h2>"
+            # Tages-PnL pro Strategie (nur Trading-Tage, min. 4 pro Strategie)
+            MIN_PNL_DAYS = 4
+            pnl_df_base = load_daily_pnl(conn, runtime_name, days=14)
+            if not pnl_df_base.empty and "pnl_net" in pnl_df_base.columns:
+                content += f"<h2>{env_name} — Tages-PnL</h2>"
                 for strat in sorted(strategies):
-                    strat_pnl = pnl_df[pnl_df["strategy_key"] == strat].copy()
-                    if strat_pnl.empty:
-                        continue
-
                     weekdays = strat_weekdays.get(strat)
+
+                    # Mit 14 Tagen starten, bei Bedarf erweitern
+                    strat_pnl = pnl_df_base[pnl_df_base["strategy_key"] == strat].copy()
                     if weekdays:
                         strat_pnl = strat_pnl[
                             pd.DatetimeIndex(strat_pnl["date"]).weekday.isin(weekdays)
                         ]
+
+                    if len(strat_pnl) < MIN_PNL_DAYS:
+                        # Groesseres Fenster laden (7 Wochen deckt auch 1x/Woche ab)
+                        wider_df = load_daily_pnl(
+                            conn, runtime_name, days=49, strategy_key=strat,
+                        )
+                        if not wider_df.empty:
+                            strat_pnl = wider_df.copy()
+                            if weekdays:
+                                strat_pnl = strat_pnl[
+                                    pd.DatetimeIndex(strat_pnl["date"]).weekday.isin(weekdays)
+                                ]
+                            # Auf die letzten MIN_PNL_DAYS begrenzen
+                            strat_pnl = strat_pnl.sort_values("date").tail(MIN_PNL_DAYS)
+
                     if strat_pnl.empty:
                         continue
 
