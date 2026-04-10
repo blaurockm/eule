@@ -522,6 +522,38 @@ def _page_performance() -> str:
             if warnings:
                 content += '<div class="error">' + "<br>".join(f"⚠ {w}" for w in warnings) + "</div>"
 
+            # Tages-PnL Heatmap (14 Tage)
+            pnl_df = load_daily_pnl(conn, runtime_name, days=14)
+            if not pnl_df.empty and "pnl_net" in pnl_df.columns:
+                # Pivot: Zeilen=Datum, Spalten=Strategie
+                pivot = pnl_df.pivot_table(
+                    index="date", columns="strategy_key", values="pnl_net", aggfunc="sum",
+                )
+                if not pivot.empty:
+                    strat_cols = sorted(pivot.columns)
+                    # Spaltennamen kuerzen (max 12 Zeichen)
+                    short_names = [s[:12] for s in strat_cols]
+                    headers = ["Datum"] + short_names + ["Gesamt"]
+                    aligns = ["l"] + ["r"] * (len(strat_cols) + 1)
+                    pnl_rows = []
+                    for dt in sorted(pivot.index):
+                        row_data = pivot.loc[dt]
+                        cells = [dt.strftime("%a %d.%m.")]
+                        day_total = 0.0
+                        for s in strat_cols:
+                            val = row_data.get(s, 0.0)
+                            if val is None or (hasattr(val, '__class__') and val.__class__.__name__ == 'float' and val != val):
+                                cells.append('<span class="dim">—</span>')
+                            else:
+                                val = float(val)
+                                day_total += val
+                                cells.append(_color(val, fmt="+,.0f"))
+                        cells.append(f"<strong>{_color(day_total, fmt='+,.0f')}</strong>")
+                        pnl_rows.append(cells)
+
+                    content += f"<h2>{env_name} — Tages-PnL (14d)</h2>"
+                    content += _table(headers, pnl_rows, aligns)
+
     finally:
         conn.close()
 
