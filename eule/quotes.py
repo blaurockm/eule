@@ -6,10 +6,34 @@ Fallback: yfinance.
 """
 
 import time
+from dataclasses import dataclass
 
 from loguru import logger
 
 _ibkr_warned = False
+
+
+@dataclass
+class QuoteDetail:
+    """Detailliertes Quote-Ergebnis fuer einzelnen Ticker."""
+    ticker: str
+    last: float | None
+    bid: float | None
+    ask: float | None
+    change: float | None
+    change_pct: float | None
+    source: str  # "ibkr" oder "yfinance"
+
+    def to_dict(self) -> dict:
+        return {
+            "ticker": self.ticker,
+            "last": self.last,
+            "bid": self.bid,
+            "ask": self.ask,
+            "change": self.change,
+            "change_pct": self.change_pct,
+            "source": self.source,
+        }
 
 
 def _parse_ibkr_price(entry: dict) -> float | None:
@@ -189,6 +213,72 @@ def fetch_quotes_ibkr_by_isin(
         except Exception as e:
             logger.debug(f"IBKR ISIN {ticker} fehlgeschlagen: {e}")
             results[ticker] = None
+
+    return results
+
+
+def _parse_ibkr_float(value) -> float | None:
+    """Parst einen IBKR-Snapshot-Wert als float (mit Prefix-Handling)."""
+    if value is None:
+        return None
+    raw = str(value).lstrip("CHch")
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return None
+
+
+def fetch_quote_details(tickers: list[str], ibkr_client) -> list[QuoteDetail]:
+    """Holt detaillierte Quotes via IBKR (Last, Bid, Ask, Change).
+
+    Args:
+        tickers: Liste von Ticker-Symbolen
+        ibkr_client: ibind IbkrClient Instanz
+
+    Returns:
+        Liste von QuoteDetail
+    """
+    results: list[QuoteDetail] = []
+
+    for ticker in tickers:
+        try:
+            search_res = ibkr_client.search_contract_by_symbol(ticker)
+            if not hasattr(search_res, "data") or not search_res.data:
+                logger.debug(f"IBKR: Kein Ergebnis fuer {ticker}")
+                results.append(QuoteDetail(ticker=ticker, last=None, bid=None, ask=None,
+                                           change=None, change_pct=None, source="ibkr"))
+                continue
+
+            conid = str(search_res.data[0].get("conid", ""))
+            if not conid:
+                results.append(QuoteDetail(ticker=ticker, last=None, bid=None, ask=None,
+                                           change=None, change_pct=None, source="ibkr"))
+                continue
+
+            # 31=Last, 82=Change, 83=Change%, 84=Bid, 86=Ask
+            params = {"conids": conid, "fields": "31,82,83,84,86"}
+            detail = QuoteDetail(ticker=ticker, last=None, bid=None, ask=None,
+                                 change=None, change_pct=None, source="ibkr")
+
+            for _ in range(5):
+                snapshot = ibkr_client.get("iserver/marketdata/snapshot", params, log=False)
+                if snapshot and hasattr(snapshot, "data") and snapshot.data:
+                    entry = snapshot.data[0] if isinstance(snapshot.data, list) else snapshot.data
+                    detail.last = _parse_ibkr_price(entry)
+                    detail.bid = _parse_ibkr_float(entry.get("84"))
+                    detail.ask = _parse_ibkr_float(entry.get("86"))
+                    detail.change = _parse_ibkr_float(entry.get("82"))
+                    detail.change_pct = _parse_ibkr_float(entry.get("83"))
+                    if detail.last is not None:
+                        break
+                time.sleep(0.3)
+
+            results.append(detail)
+
+        except Exception as e:
+            logger.debug(f"IBKR quote detail {ticker} fehlgeschlagen: {e}")
+            results.append(QuoteDetail(ticker=ticker, last=None, bid=None, ask=None,
+                                       change=None, change_pct=None, source="ibkr"))
 
     return results
 

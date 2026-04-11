@@ -27,6 +27,7 @@ app.command()(bestand.options)
 app.command()(bestand.allocation)
 app.command()(bestand.briefing)
 app.command()(bestand.thesis)
+app.command()(bestand.quote)
 
 # ── Bewertung: Wie laeuft es? ────────────────────────
 app.command()(bewertung.trades)

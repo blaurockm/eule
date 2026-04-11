@@ -409,3 +409,74 @@ def thesis(
         for err in snap.errors:
             console.print(f"   {err}")
     console.print()
+
+
+def quote(
+    tickers: list[str] = typer.Argument(..., help="Ticker-Symbole (z.B. AAPL MSFT)"),
+    format: str = typer.Option("markdown", "--format", help="Output-Format: markdown oder json"),
+) -> None:
+    """Live-Kurse via IBKR abfragen."""
+    from eule.bestand.aggregator import create_adapter
+    from eule.brokers.ibkr import IbkrAdapter
+    from eule.quotes import fetch_quote_details
+
+    try:
+        cfg = load_config()
+    except ConfigError as e:
+        console.print(f"[red]Fehler:[/red] {e}")
+        raise typer.Exit(1)
+
+    # Ersten aktiven IBKR-Broker finden
+    ibkr_client = None
+    for name, broker_cfg in cfg.brokers.items():
+        if broker_cfg.enabled and broker_cfg.broker_type == "ibkr":
+            try:
+                adapter = create_adapter(broker_cfg)
+                if isinstance(adapter, IbkrAdapter):
+                    ibkr_client = adapter.get_client()
+                    break
+            except Exception as e:
+                console.print(f"[yellow]IBKR {name}: {e}[/yellow]")
+
+    if ibkr_client is None:
+        console.print("[red]Fehler:[/red] Kein aktiver IBKR-Broker konfiguriert")
+        raise typer.Exit(1)
+
+    details = fetch_quote_details(tickers, ibkr_client)
+
+    if format == "json":
+        output_json([d.to_dict() for d in details])
+        return
+
+    table = Table(show_lines=False, pad_edge=False)
+    table.add_column("Ticker", style="bold", no_wrap=True)
+    table.add_column("Last", justify="right", no_wrap=True)
+    table.add_column("Chg", justify="right", no_wrap=True)
+    table.add_column("Chg%", justify="right", no_wrap=True)
+    table.add_column("Bid", justify="right", no_wrap=True)
+    table.add_column("Ask", justify="right", no_wrap=True)
+
+    for d in details:
+        if d.last is None:
+            table.add_row(d.ticker, "[red]-[/red]", "", "", "", "")
+            continue
+
+        chg_str = ""
+        chg_pct_str = ""
+        if d.change is not None:
+            style = "green" if d.change >= 0 else "red"
+            chg_str = f"[{style}]{d.change:+.2f}[/{style}]"
+        if d.change_pct is not None:
+            style = "green" if d.change_pct >= 0 else "red"
+            chg_pct_str = f"[{style}]{d.change_pct:+.2f}%[/{style}]"
+
+        table.add_row(
+            d.ticker,
+            f"{d.last:.2f}",
+            chg_str,
+            chg_pct_str,
+            f"{d.bid:.2f}" if d.bid else "-",
+            f"{d.ask:.2f}" if d.ask else "-",
+        )
+
+    console.print(table)
