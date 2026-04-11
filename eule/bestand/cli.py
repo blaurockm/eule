@@ -480,3 +480,74 @@ def quote(
         )
 
     console.print(table)
+
+
+def history(
+    ticker: str = typer.Argument(..., help="Ticker-Symbol (z.B. AAPL)"),
+    bar: str = typer.Option("5min", "--bar", help="Bar-Groesse: 1min, 5min, 15min, 30min, 1h, 4h, 1d"),
+    period: str | None = typer.Option(None, "--period", help="Zeitraum (z.B. 8h, 2d, 1w, 6m). Default je nach bar."),
+    format: str = typer.Option("markdown", "--format", help="Output-Format: markdown oder json"),
+) -> None:
+    """Historische OHLCV-Daten via IBKR abfragen."""
+    from eule.bestand.aggregator import create_adapter
+    from eule.brokers.ibkr import IbkrAdapter
+    from eule.quotes import fetch_history
+
+    try:
+        cfg = load_config()
+    except ConfigError as e:
+        console.print(f"[red]Fehler:[/red] {e}")
+        raise typer.Exit(1)
+
+    # Ersten aktiven IBKR-Broker finden
+    ibkr_client = None
+    for name, broker_cfg in cfg.brokers.items():
+        if broker_cfg.enabled and broker_cfg.broker_type == "ibkr":
+            try:
+                adapter = create_adapter(broker_cfg)
+                if isinstance(adapter, IbkrAdapter):
+                    ibkr_client = adapter.get_client()
+                    break
+            except Exception as e:
+                console.print(f"[yellow]IBKR {name}: {e}[/yellow]")
+
+    if ibkr_client is None:
+        console.print("[red]Fehler:[/red] Kein aktiver IBKR-Broker konfiguriert")
+        raise typer.Exit(1)
+
+    result = fetch_history(ticker, ibkr_client, bar=bar, period=period)
+
+    if result.error:
+        console.print(f"[red]Fehler:[/red] {result.error}")
+        raise typer.Exit(1)
+
+    if format == "json":
+        output_json(result.to_dict())
+        return
+
+    console.print(f"\n[bold]{result.ticker}[/bold] — {result.bar} Bars, Zeitraum {result.period} ({len(result.bars)} Bars)")
+
+    table = Table(show_lines=False, pad_edge=False)
+    table.add_column("Zeitpunkt", no_wrap=True)
+    table.add_column("Open", justify="right")
+    table.add_column("High", justify="right")
+    table.add_column("Low", justify="right")
+    table.add_column("Close", justify="right")
+    table.add_column("Volume", justify="right")
+
+    for b in result.bars:
+        if bar == "1d":
+            dt_str = b.dt.strftime("%Y-%m-%d")
+        else:
+            dt_str = b.dt.strftime("%Y-%m-%d %H:%M")
+
+        table.add_row(
+            dt_str,
+            f"{b.open:.2f}",
+            f"{b.high:.2f}",
+            f"{b.low:.2f}",
+            f"{b.close:.2f}",
+            f"{b.volume:,.0f}",
+        )
+
+    console.print(table)

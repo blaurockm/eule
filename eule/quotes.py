@@ -6,7 +6,8 @@ Fallback: yfinance.
 """
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 
 from loguru import logger
 
@@ -351,3 +352,117 @@ def fetch_quotes(
         _ibkr_warned = True
 
     return results, warnings
+
+
+# ---------------------------------------------------------------------------
+# Historische Kursdaten
+# ---------------------------------------------------------------------------
+
+# Sinnvolle Default-Perioden je Bar-Groesse
+_DEFAULT_PERIODS: dict[str, str] = {
+    "1min": "8h",
+    "5min": "8h",
+    "15min": "2d",
+    "30min": "2d",
+    "1h": "1w",
+    "4h": "1w",
+    "1d": "6m",
+}
+
+
+@dataclass
+class HistoryBar:
+    """Einzelner OHLCV-Bar."""
+    dt: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+    def to_dict(self) -> dict:
+        return {
+            "dt": self.dt.isoformat(),
+            "open": self.open,
+            "high": self.high,
+            "low": self.low,
+            "close": self.close,
+            "volume": self.volume,
+        }
+
+
+@dataclass
+class HistoryResult:
+    """Ergebnis einer History-Abfrage."""
+    ticker: str
+    bar: str
+    period: str
+    bars: list[HistoryBar] = field(default_factory=list)
+    error: str | None = None
+
+    def to_dict(self) -> dict:
+        d: dict = {
+            "ticker": self.ticker,
+            "bar": self.bar,
+            "period": self.period,
+            "count": len(self.bars),
+        }
+        if self.error:
+            d["error"] = self.error
+        else:
+            d["bars"] = [b.to_dict() for b in self.bars]
+        return d
+
+
+def fetch_history(
+    ticker: str,
+    ibkr_client,
+    bar: str = "5min",
+    period: str | None = None,
+) -> HistoryResult:
+    """Holt historische OHLCV-Daten via IBKR.
+
+    Args:
+        ticker: Ticker-Symbol (z.B. AAPL)
+        ibkr_client: ibind IbkrClient Instanz
+        bar: Bar-Groesse (1min, 5min, 15min, 30min, 1h, 4h, 1d)
+        period: Zeitraum (z.B. 8h, 2d, 1w, 6m). Default je nach bar.
+
+    Returns:
+        HistoryResult mit OHLCV-Bars
+    """
+    if period is None:
+        period = _DEFAULT_PERIODS.get(bar, "1d")
+
+    _init_ibkr_session(ibkr_client)
+
+    try:
+        resp = ibkr_client.marketdata_history_by_symbol(
+            symbol=ticker,
+            bar=bar,
+            period=period,
+            outside_rth=False,
+        )
+
+        if not resp or not resp.data or "data" not in resp.data:
+            return HistoryResult(ticker=ticker, bar=bar, period=period,
+                                 error="Keine Daten erhalten")
+
+        bars: list[HistoryBar] = []
+        for entry in resp.data["data"]:
+            ts_ms = entry.get("t", 0)
+            bars.append(HistoryBar(
+                dt=datetime.utcfromtimestamp(ts_ms / 1000),
+                open=float(entry.get("o", 0)),
+                high=float(entry.get("h", 0)),
+                low=float(entry.get("l", 0)),
+                close=float(entry.get("c", 0)),
+                volume=float(entry.get("v", 0)),
+            ))
+
+        bars.sort(key=lambda b: b.dt)
+        return HistoryResult(ticker=ticker, bar=bar, period=period, bars=bars)
+
+    except Exception as e:
+        logger.debug(f"IBKR history {ticker} fehlgeschlagen: {e}")
+        return HistoryResult(ticker=ticker, bar=bar, period=period, error=str(e))
