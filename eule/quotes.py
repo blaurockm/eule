@@ -228,8 +228,26 @@ def _parse_ibkr_float(value) -> float | None:
         return None
 
 
+def _init_ibkr_session(ibkr_client) -> None:
+    """Initialisiert die IBKR-Session fuer Marktdaten-Abfragen.
+
+    Muss vor Snapshot-Calls aufgerufen werden (vgl. Hase BrokerIBKR.setup).
+    """
+    try:
+        ibkr_client.receive_brokerage_accounts()
+    except Exception as e:
+        logger.debug(f"receive_brokerage_accounts fehlgeschlagen: {e}")
+    try:
+        ibkr_client.get("iserver/marketdata/unsubscribeall")
+    except Exception as e:
+        logger.debug(f"unsubscribeall fehlgeschlagen: {e}")
+
+
 def fetch_quote_details(tickers: list[str], ibkr_client) -> list[QuoteDetail]:
     """Holt detaillierte Quotes via IBKR (Last, Bid, Ask, Change).
+
+    Initialisiert die IBKR-Session (receive_brokerage_accounts + unsubscribeall)
+    und pollt Snapshots mit bis zu 20 Retries pro Ticker (wie Hase).
 
     Args:
         tickers: Liste von Ticker-Symbolen
@@ -238,6 +256,8 @@ def fetch_quote_details(tickers: list[str], ibkr_client) -> list[QuoteDetail]:
     Returns:
         Liste von QuoteDetail
     """
+    _init_ibkr_session(ibkr_client)
+
     results: list[QuoteDetail] = []
 
     for ticker in tickers:
@@ -260,7 +280,7 @@ def fetch_quote_details(tickers: list[str], ibkr_client) -> list[QuoteDetail]:
             detail = QuoteDetail(ticker=ticker, last=None, bid=None, ask=None,
                                  change=None, change_pct=None, source="ibkr")
 
-            for _ in range(5):
+            for _ in range(20):
                 snapshot = ibkr_client.get("iserver/marketdata/snapshot", params, log=False)
                 if snapshot and hasattr(snapshot, "data") and snapshot.data:
                     entry = snapshot.data[0] if isinstance(snapshot.data, list) else snapshot.data
