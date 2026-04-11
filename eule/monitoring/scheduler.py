@@ -239,7 +239,7 @@ class Scheduler(threading.Thread):
 
     def _run_systemd(self, name: str, job: JobConfig):
         """Startet eine systemd-Unit und ueberwacht sie in einem Hintergrund-Thread."""
-        code, output = _run_systemctl("start", job.unit)
+        code, output = _run_systemctl("start", "--no-block", job.unit)
         if code != 0:
             raise RuntimeError(f"Start fehlgeschlagen fuer {job.unit}: {output}")
 
