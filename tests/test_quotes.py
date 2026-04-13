@@ -77,11 +77,15 @@ class TestInterpretMdCode:
     def test_realtime_wins_over_book(self):
         assert interpret_md_code("RB") == "realtime"
 
-    def test_delayed_snapshot(self):
-        assert interpret_md_code("DP") == "snapshot"
+    def test_delayed_snapshot_book_is_delayed(self):
+        # "D" dominiert "P" — Delayed-Snapshot ist trotzdem verzoegert
+        assert interpret_md_code("DPB") == "delayed"
 
     def test_delayed_only(self):
         assert interpret_md_code("D") == "delayed"
+
+    def test_snapshot_without_delay_is_realtime_snapshot(self):
+        assert interpret_md_code("P") == "snapshot"
 
     def test_frozen(self):
         assert interpret_md_code("Z") == "frozen"

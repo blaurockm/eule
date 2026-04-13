@@ -46,21 +46,24 @@ class QuoteDetail:
 def interpret_md_code(code: str | None) -> str:
     """Interpretiert IBKR Market Data Availability (Feld 6509).
 
-    Codes sind oft kombiniert (z.B. "RB" = Realtime + Book, "DP" = Delayed Snapshot).
-    Prioritaet: Realtime > Snapshot > Delayed > Frozen > Not-Subscribed > No-Data.
+    Codes sind kombiniert (z.B. "RB" = Realtime + Book, "DPB" = Delayed Snapshot Book).
+    Achtung: "D" dominiert "P" — ein Delayed-Snapshot ist trotzdem verzoegert.
+
+    Buchstaben: R=Realtime, D=Delayed, Z=Frozen, Y=Frozen Delayed,
+    N=Not Subscribed, P=Snapshot, B=Book.
     """
     if not code:
         return "no_data"
     if "R" in code:
         return "realtime"
-    if "P" in code:
-        return "snapshot"
     if "D" in code:
         return "delayed"
     if "Z" in code:
         return "frozen"
-    if "N" in code or "Y" in code:
+    if "Y" in code or "N" in code:
         return "not_subscribed"
+    if "P" in code:
+        return "snapshot"
     return "unknown"
 
 
