@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from eule.quotes import fetch_quotes, fetch_quotes_yfinance
+from eule.quotes import fetch_quotes, fetch_quotes_yfinance, interpret_md_code
 
 
 class TestFetchQuotes:
@@ -69,3 +69,28 @@ class TestFetchQuotes:
 
         # Reset
         eule.quotes._ibkr_warned = False
+
+
+class TestInterpretMdCode:
+    """IBKR Feld 6509 (Market Data Availability) Interpretation."""
+
+    def test_realtime_wins_over_book(self):
+        assert interpret_md_code("RB") == "realtime"
+
+    def test_delayed_snapshot(self):
+        assert interpret_md_code("DP") == "snapshot"
+
+    def test_delayed_only(self):
+        assert interpret_md_code("D") == "delayed"
+
+    def test_frozen(self):
+        assert interpret_md_code("Z") == "frozen"
+
+    def test_frozen_delayed(self):
+        assert interpret_md_code("Y") == "not_subscribed"
+
+    def test_none_is_no_data(self):
+        assert interpret_md_code(None) == "no_data"
+
+    def test_empty_is_no_data(self):
+        assert interpret_md_code("") == "no_data"

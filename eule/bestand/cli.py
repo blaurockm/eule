@@ -455,10 +455,21 @@ def quote(
     table.add_column("Chg%", justify="right", no_wrap=True)
     table.add_column("Bid", justify="right", no_wrap=True)
     table.add_column("Ask", justify="right", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+
+    status_style = {
+        "realtime": "green",
+        "snapshot": "green",
+        "delayed": "yellow",
+        "frozen": "red",
+        "not_subscribed": "red",
+        "no_data": "dim",
+        "unknown": "dim",
+    }
 
     for d in details:
         if d.last is None:
-            table.add_row(d.ticker, "[red]-[/red]", "", "", "", "")
+            table.add_row(d.ticker, "[red]-[/red]", "", "", "", "", "")
             continue
 
         chg_str = ""
@@ -470,6 +481,10 @@ def quote(
             style = "green" if d.change_pct >= 0 else "red"
             chg_pct_str = f"[{style}]{d.change_pct:+.2f}%[/{style}]"
 
+        status = d.md_status or "no_data"
+        code_suffix = f" ({d.md_code})" if d.md_code else ""
+        status_str = f"[{status_style.get(status, 'dim')}]{status}{code_suffix}[/{status_style.get(status, 'dim')}]"
+
         table.add_row(
             d.ticker,
             f"{d.last:.2f}",
@@ -477,9 +492,15 @@ def quote(
             chg_pct_str,
             f"{d.bid:.2f}" if d.bid else "-",
             f"{d.ask:.2f}" if d.ask else "-",
+            status_str,
         )
 
     console.print(table)
+
+    timestamps = [d.timestamp for d in details if d.timestamp is not None]
+    if timestamps:
+        ts = max(timestamps).strftime("%Y-%m-%d %H:%M:%S")
+        console.print(f"[dim]Abgerufen: {ts} (lokal)[/dim]")
 
 
 def history(

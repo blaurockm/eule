@@ -24,6 +24,9 @@ class QuoteDetail:
     change: float | None
     change_pct: float | None
     source: str  # "ibkr" oder "yfinance"
+    timestamp: datetime | None = None  # Client-seitige Abrufzeit
+    md_code: str | None = None  # IBKR Feld 6509 roh (z.B. "RB", "DP", "Z")
+    md_status: str | None = None  # Interpretation: realtime/snapshot/delayed/frozen/not_subscribed/no_data
 
     def to_dict(self) -> dict:
         return {
@@ -34,7 +37,31 @@ class QuoteDetail:
             "change": self.change,
             "change_pct": self.change_pct,
             "source": self.source,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "md_code": self.md_code,
+            "md_status": self.md_status,
         }
+
+
+def interpret_md_code(code: str | None) -> str:
+    """Interpretiert IBKR Market Data Availability (Feld 6509).
+
+    Codes sind oft kombiniert (z.B. "RB" = Realtime + Book, "DP" = Delayed Snapshot).
+    Prioritaet: Realtime > Snapshot > Delayed > Frozen > Not-Subscribed > No-Data.
+    """
+    if not code:
+        return "no_data"
+    if "R" in code:
+        return "realtime"
+    if "P" in code:
+        return "snapshot"
+    if "D" in code:
+        return "delayed"
+    if "Z" in code:
+        return "frozen"
+    if "N" in code or "Y" in code:
+        return "not_subscribed"
+    return "unknown"
 
 
 def _parse_ibkr_price(entry: dict) -> float | None:
@@ -276,8 +303,8 @@ def fetch_quote_details(tickers: list[str], ibkr_client) -> list[QuoteDetail]:
                                            change=None, change_pct=None, source="ibkr"))
                 continue
 
-            # 31=Last, 82=Change, 83=Change%, 84=Bid, 86=Ask
-            params = {"conids": conid, "fields": "31,82,83,84,86"}
+            # 31=Last, 82=Change, 83=Change%, 84=Bid, 86=Ask, 6509=Market Data Availability
+            params = {"conids": conid, "fields": "31,82,83,84,86,6509"}
             detail = QuoteDetail(ticker=ticker, last=None, bid=None, ask=None,
                                  change=None, change_pct=None, source="ibkr")
 
@@ -290,7 +317,12 @@ def fetch_quote_details(tickers: list[str], ibkr_client) -> list[QuoteDetail]:
                     detail.ask = _parse_ibkr_float(entry.get("86"))
                     detail.change = _parse_ibkr_float(entry.get("82"))
                     detail.change_pct = _parse_ibkr_float(entry.get("83"))
+                    md_raw = entry.get("6509")
+                    if md_raw:
+                        detail.md_code = str(md_raw)
+                        detail.md_status = interpret_md_code(detail.md_code)
                     if detail.last is not None:
+                        detail.timestamp = datetime.now()
                         break
                 time.sleep(0.3)
 
