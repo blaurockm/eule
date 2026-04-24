@@ -52,8 +52,12 @@ ENVIRONMENTS = {
     },
 }
 
-# Daily summary windows (Berlin time for IBKR, UTC for HL)
-DAILY_SUMMARY_IBKR = {"hour": 21, "minute_start": 0, "minute_end": 15, "tz": "Europe/Berlin"}
+# Daily summary windows (Berlin time for IBKR, UTC for HL).
+# Hase writes the daily-summary JSON files at 22:30 Berlin (after mark-to-market).
+# The scheduler triggers job_daily_summary at 22:45 — the window must cover both
+# so manual `eule precheck` calls between 22:30 and midnight render the JSON
+# summary instead of querying the (already-stopped) live APIs.
+DAILY_SUMMARY_IBKR = {"hour": 22, "minute_start": 30, "minute_end": 59, "tz": "Europe/Berlin"}
 DAILY_SUMMARY_HL = {"hour": 0, "minute_start": 0, "minute_end": 15, "tz": "UTC"}
 
 
