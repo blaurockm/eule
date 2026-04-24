@@ -130,91 +130,113 @@ def api_post(port: int, endpoint: str) -> dict | None:
         return None
 
 
-def evaluate_fsm_expectation(condition: str, expected, current_state: str, now: datetime) -> str | None:
+_DAY_MAP = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
+
+def _condition_active(condition: str, now: datetime) -> bool:
+    """Return True if the condition's temporal precondition applies right now.
+
+    Supported grammar:
+      - "not Monday" / "not Tuesday" / ...
+      - "Monday after 10:30 ET" / "Wednesday before 16:00 ET"
+      - "after 16:00 ET" / "before 09:30 ET" (no day qualifier)
+      - "weekday" / "weekday after HH:MM ET" / "weekday before HH:MM ET"
+      - "trading hours (HH:MM-HH:MM CET)"
+      - "outside trading hours"
+      - "market open first minutes"
+      - "any time"
+      - Compounds: "X and Y" — every part must be active.
     """
-    Evaluate a single FSM expectation condition.
-    Returns anomaly message if violated, None if OK or condition doesn't apply.
+    import re as _re
+
+    cond = condition.lower().strip()
+
+    # Compound: every part must be active
+    if _re.search(r"\s+and\s+", cond):
+        parts = [p.strip() for p in _re.split(r"\s+and\s+", cond)]
+        return all(_condition_active(p, now) for p in parts)
+
+    now_et = now.astimezone(ZoneInfo("US/Eastern"))
+    now_berlin = now.astimezone(ZoneInfo("Europe/Berlin"))
+    weekday = now.weekday()
+
+    for day_name, day_num in _DAY_MAP.items():
+        if cond == f"not {day_name}":
+            return weekday != day_num
+
+    if cond == "weekday":
+        return weekday <= 4
+
+    # Time-based conditions with "after" / "before"
+    for keyword in ("after", "before"):
+        if keyword in cond and "et" in cond:
+            prefix, _, suffix = cond.partition(keyword)
+            time_str = suffix.replace("et", "").strip()
+            try:
+                threshold = time.fromisoformat(time_str)
+            except ValueError:
+                continue
+
+            prefix = prefix.strip()
+            # "weekday after/before HH:MM ET"
+            if prefix == "weekday":
+                if weekday > 4:
+                    return False
+            else:
+                # Optional "Xday" prefix
+                day_match = None
+                for day_name, day_num in _DAY_MAP.items():
+                    if day_name in prefix:
+                        day_match = day_num
+                        break
+                if day_match is not None and weekday != day_match:
+                    return False
+
+            return now_et.time() >= threshold if keyword == "after" else now_et.time() < threshold
+
+    if "trading hours" in cond and "cet" in cond:
+        m = _re.search(r"(\d{2}:\d{2})-(\d{2}:\d{2})", cond)
+        if m:
+            start = time.fromisoformat(m.group(1))
+            end = time.fromisoformat(m.group(2))
+            return start <= now_berlin.time() <= end and weekday <= 4
+        return False
+
+    if "outside trading hours" in cond:
+        return weekday > 4 or now_berlin.hour < 9 or now_berlin.hour >= 18
+
+    if "market open" in cond and "first minutes" in cond:
+        return weekday <= 4 and now_berlin.hour == 9 and now_berlin.minute < 20
+
+    if "any time" in cond:
+        return True
+
+    return False
+
+
+def evaluate_fsm_expectation(condition: str, expected, current_state: str, now: datetime) -> str | None:
+    """Evaluate a single FSM expectation condition.
+
+    Returns an anomaly message if the condition is temporally active but the
+    current state is not in the expected set. Returns None otherwise.
     """
     expected_states = expected if isinstance(expected, list) else [expected]
 
     if current_state in expected_states:
-        return None  # State matches, no anomaly
-
-    now_et = now.astimezone(ZoneInfo("US/Eastern"))
-    now_berlin = now.astimezone(ZoneInfo("Europe/Berlin"))
-    weekday = now.weekday()  # 0=Mon
-
-    cond = condition.lower().strip()
-
-    # "not Monday" / "not Tuesday"
-    day_map = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
-    for day_name, day_num in day_map.items():
-        if cond == f"not {day_name}":
-            if weekday != day_num:
-                return f"Unexpected FSM: {current_state} (expected {expected})"
-            return None
-
-    # "after HH:MM ET"
-    if "after" in cond and "et" in cond:
-        parts = cond.replace("after", "").replace("et", "").strip()
-        # Extract time, possibly with day prefix: "Monday after 10:30 ET"
-        time_str = parts.split()[-1] if parts.split() else parts
-        try:
-            threshold = time.fromisoformat(time_str)
-        except ValueError:
-            return None
-        # Check day prefix if present
-        for day_name, day_num in day_map.items():
-            if day_name in cond:
-                if weekday != day_num:
-                    return None  # Wrong day, condition doesn't apply
-                break
-        if now_et.time() >= threshold:
-            return f"Unexpected FSM: {current_state} (expected {expected})"
         return None
 
-    # "weekday after HH:MM ET"
-    if "weekday" in cond and "after" in cond:
-        if weekday > 4:
-            return None  # Weekend
-        time_str = cond.split("after")[-1].replace("et", "").strip()
-        try:
-            threshold = time.fromisoformat(time_str)
-        except ValueError:
-            return None
-        if now_et.time() >= threshold:
-            return f"Unexpected FSM: {current_state} (expected {expected})"
-        return None
-
-    # "trading hours (HH:MM-HH:MM CET)"
-    if "trading hours" in cond and "cet" in cond:
-        import re
-
-        m = re.search(r"(\d{2}:\d{2})-(\d{2}:\d{2})", cond)
-        if m:
-            start = time.fromisoformat(m.group(1))
-            end = time.fromisoformat(m.group(2))
-            if start <= now_berlin.time() <= end and weekday <= 4:
-                return f"Unexpected FSM: {current_state} (expected {expected})"
-        return None
-
-    # "outside trading hours"
-    if "outside trading hours" in cond:
-        # If we're in trading hours, condition doesn't apply
-        # This is checked contextually — if we got here, it's outside
-        if weekday > 4 or now_berlin.hour < 9 or now_berlin.hour >= 18:
-            return f"Unexpected FSM: {current_state} (expected {expected})"
-        return None
-
-    # "market open first minutes"
-    if "market open" in cond and "first minutes" in cond:
-        if weekday <= 4 and 9 <= now_berlin.hour <= 9 and now_berlin.minute < 20:
-            return f"Unexpected FSM: {current_state} (expected {expected})"
-        return None
-
-    # "any time" — always applies
-    if "any time" in cond:
+    if _condition_active(condition, now):
         return f"Unexpected FSM: {current_state} (expected {expected})"
+
+    return None
 
     return None  # Unknown condition, skip
 

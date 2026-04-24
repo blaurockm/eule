@@ -10,13 +10,18 @@ entry:
 
 fsm:
   valid_states: [EVALUATING, FLAT, PENDING_FILL, IN_POSITION, ERROR]
+  # 1DTE: Entry Donnerstag 11:00 ET, Exit Freitag (broker-abhaengig, nominal 16:00 ET).
+  # Die Position muss den Freitag ueber offen sein. "not in position" am Tag-nach
+  # vor Exit = Anomalie. "no setup found" am Entry-Tag = Anomalie.
   expectations:
-    - condition: "not Thursday"
+    - condition: "not Thursday and not Friday"
+      expected: FLAT
+    - condition: "Thursday before 11:00 ET"
       expected: FLAT
     - condition: "Thursday after 11:30 ET"
-      expected: [IN_POSITION, FLAT]
-    - condition: "Friday after 16:00 ET"
-      expected: FLAT
+      expected: [IN_POSITION, PENDING_FILL]
+    - condition: "Friday before 16:00 ET"
+      expected: [IN_POSITION, PENDING_FILL]
 
 metrics:
   win_rate:

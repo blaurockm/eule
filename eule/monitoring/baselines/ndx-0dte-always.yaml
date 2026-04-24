@@ -11,8 +11,10 @@ entry:
 fsm:
   valid_states: [EVALUATING, FLAT, PENDING_FILL, IN_POSITION, ERROR]
   expectations:
+    - condition: "weekday before 11:00 ET"
+      expected: FLAT
     - condition: "weekday after 11:30 ET"
-      expected: [IN_POSITION, FLAT]
+      expected: [IN_POSITION, PENDING_FILL]
     - condition: "after 16:00 ET"
       expected: [FLAT, IN_POSITION]
 

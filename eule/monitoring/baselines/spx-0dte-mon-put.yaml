@@ -13,8 +13,10 @@ fsm:
   expectations:
     - condition: "not Monday"
       expected: FLAT
+    - condition: "Monday before 10:00 ET"
+      expected: FLAT
     - condition: "Monday after 10:30 ET"
-      expected: [IN_POSITION, FLAT]
+      expected: [IN_POSITION, PENDING_FILL]
     - condition: "after 16:00 ET"
       expected: [FLAT, IN_POSITION]
 
