@@ -17,7 +17,7 @@ from eule.monitoring.schedule_config import JobConfig
 
 
 def job_precheck(
-    alert_callback: Callable[[str], None],
+    alert_callback: Callable[..., None],
     email_callback: Callable[..., None],
     job_config: JobConfig,
 ) -> None:
@@ -71,8 +71,14 @@ def job_precheck(
         if anomaly_lines and anomalies_changed(anomaly_lines):
             alert_text = "\n".join(anomaly_lines)
             n = len(anomaly_lines)
-            # Kurze Benachrichtigung via Telegram
-            alert_callback(f"{n} Anomalie(n) erkannt:\n{alert_text}\n\n(Analyse per Email)")
+            escaped = (
+                alert_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            )
+            alert_callback(
+                f"<b>{n} Anomalie(n) erkannt:</b>\n<pre>{escaped}</pre>\n"
+                f"<i>(Analyse per Email)</i>",
+                parse_mode="HTML",
+            )
             # Claude-Analyse via Email
             if get_claude_failures() < 3:
                 try:
@@ -106,7 +112,7 @@ def job_precheck(
 
 
 def job_daily_summary(
-    alert_callback: Callable[[str], None],
+    alert_callback: Callable[..., None],
     email_callback: Callable[..., None],
     job_config: JobConfig,
 ) -> None:
@@ -116,6 +122,7 @@ def job_daily_summary(
         _report_to_html,
         get_claude_failures,
         invoke_claude,
+        markdown_to_telegram_html,
         record_claude_failure,
         reset_claude_failures,
         run_precheck,
@@ -139,7 +146,10 @@ def job_daily_summary(
                 "Alle API-Daten sind bereits im Kontext — du musst KEINE curl-Befehle ausfuehren. "
                 "Fasse Status und PnL zusammen. Kurz und praegnant.",
             )
-            alert_callback(f"Daily Summary:\n{summary}")
+            alert_callback(
+                f"<b>Daily Summary</b>\n\n{markdown_to_telegram_html(summary)}",
+                parse_mode="HTML",
+            )
             email_body = _report_to_html(summary, title=f"Wachtel Daily Summary — {date_str}")
             send_email(f"Wachtel Daily Summary — {date_str}", email_body, html=True)
             reset_claude_failures()
@@ -154,14 +164,20 @@ def _send_fallback(alert_callback, email_fn, precheck_output: str, date_str: str
     """Fallback Daily Summary ohne Claude."""
     from eule.monitoring.telegram_bot import _report_to_html
 
-    fallback = f"Daily Summary (ohne Claude):\n{precheck_output}"
-    alert_callback(fallback)
-    email_body = _report_to_html(fallback, title=f"Wachtel Daily Summary — {date_str}")
+    escaped = (
+        precheck_output.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+    alert_callback(
+        f"<b>Daily Summary (ohne Claude)</b>\n<pre>{escaped}</pre>",
+        parse_mode="HTML",
+    )
+    fallback_plain = f"Daily Summary (ohne Claude):\n{precheck_output}"
+    email_body = _report_to_html(fallback_plain, title=f"Wachtel Daily Summary — {date_str}")
     email_fn(f"Wachtel Daily Summary — {date_str}", email_body, html=True)
 
 
 def job_weekly_report(
-    alert_callback: Callable[[str], None],
+    alert_callback: Callable[..., None],
     email_callback: Callable[..., None],
     job_config: JobConfig,
 ) -> None:
@@ -175,7 +191,11 @@ def job_weekly_report(
     log.info("Running weekly performance report")
 
     report_text = handle_report("")
-    alert_callback(f"Weekly Performance Report:\n\n{report_text}")
+    # handle_report returns Telegram-HTML (already converted via markdown_to_telegram_html).
+    alert_callback(
+        f"<b>Weekly Performance Report</b>\n\n{report_text}",
+        parse_mode="HTML",
+    )
 
     tz = ZoneInfo("Europe/Berlin")
     date_str = datetime.now(tz).strftime("%Y-%m-%d")
@@ -187,7 +207,7 @@ def job_weekly_report(
 
 
 def job_ep_brief(
-    alert_callback: Callable[[str], None],
+    alert_callback: Callable[..., None],
     email_callback: Callable[..., None],
     job_config: JobConfig,
 ) -> None:
@@ -195,6 +215,7 @@ def job_ep_brief(
     from datetime import date
 
     from eule.ep.trades import morning_brief
+    from eule.monitoring.telegram_bot import markdown_to_telegram_html
     from eule.pipeline.email import send_email
 
     log.info("Running EP morning brief")
@@ -206,7 +227,10 @@ def job_ep_brief(
         send_email(subject=subject, body=brief_text)
 
     if "telegram" in job_config.notify:
-        alert_callback(f"{subject}\n\n{brief_text}")
+        alert_callback(
+            f"<b>{subject}</b>\n\n{markdown_to_telegram_html(brief_text)}",
+            parse_mode="HTML",
+        )
 
 
 # Registry: function-Name aus schedule.yaml → Callable

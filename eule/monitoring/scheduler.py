@@ -150,7 +150,7 @@ class Scheduler(threading.Thread):
     def __init__(
         self,
         config: ScheduleConfig,
-        alert_callback: Callable[[str], None],
+        alert_callback: Callable[..., None],
         email_callback: Callable[..., None],
         job_registry: dict[str, Callable] | None = None,
     ):

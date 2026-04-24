@@ -116,9 +116,8 @@ def markdown_to_telegram_html(text: str) -> str:
     """Convert Claude's markdown to Telegram-compatible HTML.
 
     Telegram supports: <b>, <i>, <code>, <pre>, <a>, <s>, <u>.
-    Code blocks become <pre> (monospace, good for tables).
+    Code blocks and Markdown tables become <pre> (monospace, good for alignment).
     """
-    # Extract code blocks first (preserve content literally)
     code_blocks: list[str] = []
 
     def _save_block(match):
@@ -127,16 +126,26 @@ def markdown_to_telegram_html(text: str) -> str:
 
     text = re.sub(r"```\w*\n?(.*?)```", _save_block, text, flags=re.DOTALL)
 
-    # Escape HTML entities in remaining text
+    # Markdown tables: 2+ consecutive lines that start and end with '|'.
+    # Telegram has no table tags, so the only way to keep alignment is <pre>.
+    def _save_table(match):
+        code_blocks.append(match.group(0).rstrip("\n"))
+        return f"\x00CODEBLOCK{len(code_blocks) - 1}\x00\n"
+
+    text = re.sub(
+        r"(?:^[ \t]*\|.*\|[ \t]*\n?){2,}",
+        _save_table,
+        text,
+        flags=re.MULTILINE,
+    )
+
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    # Convert markdown to HTML
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
     text = re.sub(r"(?<!\n)\*(.+?)\*", r"<i>\1</i>", text)
     text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
     text = re.sub(r"^#{1,4}\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
 
-    # Re-insert code blocks as <pre>
     for i, block in enumerate(code_blocks):
         escaped = block.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         text = text.replace(f"\x00CODEBLOCK{i}\x00", f"<pre>{escaped}</pre>")
@@ -540,7 +549,8 @@ def handle_status() -> str:
     """Handle /status command — run precheck, return formatted output."""
     exit_code, output = run_precheck()
     prefix = {0: "OK", 1: "ANOMALIES", 2: "SUMMARY"}.get(exit_code, "?")
-    return f"[{prefix}]\n{output}"
+    escaped = output.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return f"<b>[{prefix}]</b>\n<pre>{escaped}</pre>"
 
 
 def handle_check() -> str:
@@ -551,9 +561,12 @@ def handle_check() -> str:
         "Analysiere den Precheck-Output. Pruefe die APIs direkt fuer zusaetzlichen Kontext. "
         "Fasse zusammen: Was laeuft gut, was ist auffaellig, was erfordert Aufmerksamkeit?",
     )
-    response = f"Precheck:\n{precheck_output}\n\nAnalyse:\n{claude_output}"
-    add_to_history("/check", response)
-    return response
+    add_to_history("/check", f"Precheck:\n{precheck_output}\n\nAnalyse:\n{claude_output}")
+    pre_escaped = precheck_output.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return (
+        f"<b>Precheck:</b>\n<pre>{pre_escaped}</pre>\n\n"
+        f"<b>Analyse:</b>\n{markdown_to_telegram_html(claude_output)}"
+    )
 
 
 def handle_summary() -> str:
@@ -565,22 +578,24 @@ def handle_summary() -> str:
         "Fasse zusammen: Status jeder Strategie, PnL, Anomalien, und ob alles normal laeuft.",
     )
     add_to_history("/summary", claude_output)
-    return claude_output
+    return markdown_to_telegram_html(claude_output)
 
 
 def handle_baseline(args: str) -> str:
     """Handle /baseline <name> — show baseline YAML."""
     name = args.strip()
     if not name:
-        # List all baselines
         files = sorted(MONITORING_DIR.glob("baselines/*.yaml"))
         names = [f.stem for f in files]
-        return "Verfuegbare Baselines:\n" + "\n".join(f"  {n}" for n in names)
+        listing = "\n".join(f"  {n}" for n in names)
+        return f"<b>Verfuegbare Baselines:</b>\n<pre>{listing}</pre>"
 
     path = MONITORING_DIR / "baselines" / f"{name}.yaml"
     if not path.exists():
         return f"Baseline '{name}' nicht gefunden."
-    return path.read_text()
+    yaml_text = path.read_text()
+    escaped = yaml_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return f"<b>{name}.yaml</b>\n<pre>{escaped}</pre>"
 
 
 def _load_database_url() -> str | None:
@@ -796,7 +811,7 @@ def handle_report(args: str) -> str:
 
     if not parts:
         return "Keine Performance-Daten verfuegbar."
-    return "\n\n".join(parts)
+    return markdown_to_telegram_html("\n\n".join(parts))
 
 
 # Environment → runtime_name Mapping (DB uses runtime_name, not env name)
@@ -814,7 +829,7 @@ def handle_freetext(text: str) -> str:
     context = f"Aktueller Precheck-Status:\n{precheck_output}"
     response = invoke_claude(context, text)
     add_to_history(text, response)
-    return response
+    return markdown_to_telegram_html(response)
 
 
 # --- Mute Logic ---
