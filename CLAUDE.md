@@ -87,6 +87,7 @@ Modul `eule.accounting` fuer den Joint-Account hinter `EULE_DB_REAL2_IBKR`.
 **Datenquellen** (alle in `~/Dokumente/obsidian/tradingGbr/`, Override via `EULE_TRADINGGBR_DIR`):
 - `config.yaml` — Holders, Operator, Verguetungsregel, Pfad zur balances.json
 - `cash.yaml` — Einlagen, Entnahmen, externe Kosten (manuell gepflegt)
+- `manual_trades.yaml` — Trades, die nicht in der Hase-DB stehen (z.B. aus IBKR Flex-Reports)
 - `tokens.yaml` — Token pro Holder fuer Vercel-App-URL
 
 Beispiel-Templates: `eule/accounting/examples/*.yaml`.

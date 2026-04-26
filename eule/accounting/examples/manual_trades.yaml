@@ -1,0 +1,11 @@
+# Manuelle Trades, die nicht in der Hase-DB stehen.
+# Ziel: ~/Dokumente/obsidian/tradingGbr/manual_trades.yaml
+
+# Format: nur Datum (Schliessung), Symbol, Netto-PnL nach Gebuehren.
+# Keine Entry/Exit-Details noetig — fuer die Buchhaltung reicht der PnL.
+#   pnl_eur > 0  → Gewinn (60:40-Verteilung mit 10% Tat-Verguetung)
+#   pnl_eur < 0  → Verlust (50:50)
+
+manual_trades:
+  - { date: 2024-08-15, symbol: "TLT", pnl_eur: 250.00, note: "Stop, Hase aus" }
+  - { date: 2024-09-02, symbol: "SPX 240902P05450", pnl_eur: -120.00, note: "" }

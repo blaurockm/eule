@@ -21,6 +21,7 @@ from eule.accounting.export import (
 )
 from eule.accounting.journal import build_journal
 from eule.accounting.ledger import compute_account_balances, journal_is_balanced
+from eule.accounting.manual_trades import load_manual_trades
 from eule.accounting.tax import tax_report
 from eule.bewertung.trades import detect_roundtrips, load_trades
 from eule.db import get_env_info
@@ -42,14 +43,22 @@ def _load_cfg() -> AccountingConfig:
         raise typer.Exit(1)
 
 
-def _load_roundtrips(cfg: AccountingConfig) -> list[Roundtrip]:
-    """Laedt alle Roundtrips fuer das in der Config gesetzte Environment."""
+def _load_roundtrips(cfg: AccountingConfig) -> tuple[list[Roundtrip], int, int]:
+    """Laedt Hase-Roundtrips + manuelle Trades fuer das Environment.
+
+    Returns:
+        (combined_roundtrips, db_count, manual_count)
+    """
     conn, runtime = get_env_info(cfg.env)
     try:
         trades = load_trades(conn, runtime)
     finally:
         conn.close()
-    return detect_roundtrips(trades)
+    db_rts = detect_roundtrips(trades)
+    manual_rts = load_manual_trades()
+    combined = db_rts + manual_rts
+    combined.sort(key=lambda r: r.exit_ts)
+    return combined, len(db_rts), len(manual_rts)
 
 
 def _resolve_path(value: str) -> Path:
@@ -67,7 +76,7 @@ def refresh_cmd(
     """Laedt Trades + Cash, berechnet Salden, schreibt balances.json fuer Vercel-App."""
     cfg = _load_cfg()
     cash = load_cash()
-    rts = _load_roundtrips(cfg)
+    rts, db_count, manual_count = _load_roundtrips(cfg)
     balances = compute_balances(rts, cash, cfg)
 
     target_raw = cfg.balances_json_path
@@ -84,6 +93,8 @@ def refresh_cmd(
                 "target": str(target),
                 "balances": [b.to_dict() for b in balances.values()],
                 "roundtrips_count": len(rts),
+                "roundtrips_db": db_count,
+                "roundtrips_manual": manual_count,
                 "deposits_count": len(cash.deposits),
                 "withdrawals_count": len(cash.withdrawals),
                 "expenses_count": len(cash.expenses),
@@ -93,8 +104,9 @@ def refresh_cmd(
 
     console.print(f"[green]Refresh OK[/green] -> {target}")
     console.print(
-        f"  {len(rts)} Roundtrips | {len(cash.deposits)} Einlagen | "
-        f"{len(cash.withdrawals)} Entnahmen | {len(cash.expenses)} Aufwendungen"
+        f"  {len(rts)} Roundtrips ({db_count} DB + {manual_count} manuell) | "
+        f"{len(cash.deposits)} Einlagen | {len(cash.withdrawals)} Entnahmen | "
+        f"{len(cash.expenses)} Aufwendungen"
     )
     for b in balances.values():
         console.print(
@@ -111,7 +123,7 @@ def balances_cmd(
     """Aktueller Saldo pro Holder (berechnete Sicht)."""
     cfg = _load_cfg()
     cash = load_cash()
-    rts = _load_roundtrips(cfg)
+    rts, _, _ = _load_roundtrips(cfg)
     balances = compute_balances(rts, cash, cfg)
 
     if holder:
@@ -143,7 +155,7 @@ def journal_cmd(
     """Buchungs-Journal (chronologisch, Doppik)."""
     cfg = _load_cfg()
     cash = load_cash()
-    rts = _load_roundtrips(cfg)
+    rts, _, _ = _load_roundtrips(cfg)
     postings = build_journal(rts, cash, cfg)
 
     if year:
@@ -179,7 +191,7 @@ def ledger_cmd(
     """Hauptbuch (Konten-Salden)."""
     cfg = _load_cfg()
     cash = load_cash()
-    rts = _load_roundtrips(cfg)
+    rts, _, _ = _load_roundtrips(cfg)
     postings = build_journal(rts, cash, cfg)
     if year:
         postings = [p for p in postings if p.date.year == year]
@@ -214,7 +226,7 @@ def tax_cmd(
     """Steuer-Report: Kapitaleinkuenfte + Honorar pro Holder."""
     cfg = _load_cfg()
     cash = load_cash()
-    rts = _load_roundtrips(cfg)
+    rts, _, _ = _load_roundtrips(cfg)
     expenses_year = sum(e.amount_eur for e in cash.expenses if e.date.year == year)
     lines = tax_report(rts, cfg, expenses_total=expenses_year, year=year)
 

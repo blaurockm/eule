@@ -19,6 +19,7 @@ from eule.accounting.config import (
 )
 from eule.accounting.journal import build_journal
 from eule.accounting.ledger import compute_account_balances
+from eule.accounting.manual_trades import _to_roundtrip, load_manual_trades
 from eule.accounting.tax import tax_report
 from eule.models import Roundtrip
 
@@ -302,3 +303,49 @@ class TestTaxReport:
         # Nur 2025: Kapitaleinkunft 100 (50% von 200), Honorar 20
         assert a.capital_income == pytest.approx(100.0)
         assert a.self_employment == pytest.approx(20.0)
+
+
+# ─────────────────────────────────────────
+# Manuelle Trades
+# ─────────────────────────────────────────
+
+
+class TestManualTrades:
+    def test_to_roundtrip_positive_pnl(self):
+        rt = _to_roundtrip(date(2025, 3, 15), "TLT", 250.0, "")
+        assert rt.pnl == pytest.approx(250.0)
+        assert rt.exit_date == date(2025, 3, 15)
+        assert rt.strategy_key == "manual"
+
+    def test_to_roundtrip_negative_pnl(self):
+        rt = _to_roundtrip(date(2025, 3, 15), "TLT", -50.0, "")
+        assert rt.pnl == pytest.approx(-50.0)
+
+    def test_to_roundtrip_zero_pnl(self):
+        rt = _to_roundtrip(date(2025, 3, 15), "TLT", 0.0, "")
+        assert rt.pnl == pytest.approx(0.0)
+
+    def test_loader_missing_file_returns_empty(self, tmp_path):
+        rts = load_manual_trades(tmp_path / "does_not_exist.yaml")
+        assert rts == []
+
+    def test_loader_parses_yaml(self, tmp_path):
+        path = tmp_path / "manual_trades.yaml"
+        path.write_text(
+            "manual_trades:\n"
+            "  - { date: 2025-03-15, symbol: TLT, pnl_eur: 250.0, note: 'Stop' }\n"
+            "  - { date: 2025-04-01, symbol: SPX, pnl_eur: -50.0 }\n"
+        )
+        rts = load_manual_trades(path)
+        assert len(rts) == 2
+        assert rts[0].pnl == pytest.approx(250.0)
+        assert rts[1].pnl == pytest.approx(-50.0)
+        assert "Stop" in rts[0].symbol  # note wird in Symbol angehaengt
+
+    def test_manual_trade_flows_through_allocator(self):
+        """Ein manueller Trade muss die Verteilungslogik genauso durchlaufen."""
+        cfg = _cfg()
+        rt = _to_roundtrip(date(2025, 3, 15), "TLT", 100.0, "")
+        alloc = allocate_pnl(rt.pnl, cfg)
+        assert alloc.operator_share == pytest.approx(60.0)
+        assert alloc.other_share == pytest.approx(40.0)
