@@ -1,30 +1,30 @@
 {
-  "generated_at": "2026-04-26T15:50:07",
+  "generated_at": "2026-04-26T18:22:14",
   "tokens": {
     "dmhwYYmsI84GmTrGysK-nJuPtOlGCPmUQX9Yi5h4Zmo": {
       "holder_id": "A",
       "name": "Markus Blaurock",
-      "balance_broker": 4566.12,
-      "balance_giro": 0.0,
+      "balance_broker": 1582.7,
+      "balance_giro": 2439.29,
       "capital": 5050.0,
-      "allocated_pnl": 538.76,
-      "allocated_expenses": 1022.65,
+      "allocated_pnl": 80.32,
+      "allocated_expenses": 1108.33,
       "as_of": "2026-04-26",
       "currency": "EUR",
       "recent_trades": [
         {
           "date": "2026-04-21",
-          "symbol": "SPXW  260421P07055000",
+          "symbol": "SPXW 21APR26 7055 P",
           "pnl_eur": -289.95
         },
         {
           "date": "2026-04-21",
-          "symbol": "SPXW  260421P07065000",
-          "pnl_eur": 373.4
+          "symbol": "SPXW 21APR26 7065 P",
+          "pnl_eur": 289.09
         },
         {
           "date": "2026-04-20",
-          "symbol": "SPXW  260420P07040000",
+          "symbol": "SPXW 20APR26 7040 P",
           "pnl_eur": -104.77
         }
       ]
@@ -32,27 +32,27 @@
     "Q-mrNa3YMHRJh1PrYQt-bPAJHcATYupYEchWp6qG3fc": {
       "holder_id": "B",
       "name": "CaH",
-      "balance_broker": 13307.69,
-      "balance_giro": 0.0,
+      "balance_broker": 4941.16,
+      "balance_giro": 7615.42,
       "capital": 15000.0,
-      "allocated_pnl": -669.66,
-      "allocated_expenses": 1022.65,
+      "allocated_pnl": -1335.09,
+      "allocated_expenses": 1108.33,
       "as_of": "2026-04-26",
       "currency": "EUR",
       "recent_trades": [
         {
           "date": "2026-04-21",
-          "symbol": "SPXW  260421P07055000",
+          "symbol": "SPXW 21APR26 7055 P",
           "pnl_eur": -289.95
         },
         {
           "date": "2026-04-21",
-          "symbol": "SPXW  260421P07065000",
-          "pnl_eur": 373.4
+          "symbol": "SPXW 21APR26 7065 P",
+          "pnl_eur": 289.09
         },
         {
           "date": "2026-04-20",
-          "symbol": "SPXW  260420P07040000",
+          "symbol": "SPXW 20APR26 7040 P",
           "pnl_eur": -104.77
         }
       ]

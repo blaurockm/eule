@@ -190,30 +190,43 @@ def postings_for_cash(cash: CashLedger, cfg: AccountingConfig) -> list[Posting]:
         )
 
     for ex in cash.expenses:
-        # paid_from=giro: 6000 an 1100 (Geld muss per Transfer vorher dort sein)
-        # paid_from=broker: 6000 an 1200 (IBKR-direkte Gebuehren)
+        # paid_from=giro:   6000 an 1100  (Geld muss vorher per Transfer dort sein)
+        # paid_from=broker: 6000 an 1200  (z.B. IBKR-Datenfeed-Gebuehren direkt)
+        # Negatives amount_eur (Storno einer fruheren Buchung) kehrt Soll/Haben um.
         src_account = GIRO if ex.paid_from == "giro" else BROKER
+        if ex.amount_eur >= 0:
+            ex_debit, ex_credit = EXTERNAL_EXPENSES.code, src_account.code
+            label = "Aufwand"
+        else:
+            ex_debit, ex_credit = src_account.code, EXTERNAL_EXPENSES.code
+            label = "Aufwand-Storno"
         postings.append(
             Posting(
                 date=ex.date,
-                debit=EXTERNAL_EXPENSES.code,
-                credit=src_account.code,
-                amount_eur=ex.amount_eur,
-                description=f"Aufwand ({ex.paid_from}): {ex.note}".strip(": "),
+                debit=ex_debit,
+                credit=ex_credit,
+                amount_eur=abs(ex.amount_eur),
+                description=f"{label} ({ex.paid_from}): {ex.note}".strip(": "),
                 source="expense",
                 ref=ex.note,
             )
         )
 
-        # Anteilige Belastung der Holder-Kapitalkonten (unabhaengig vom Zahlweg)
+        # Anteilige Belastung/Gutschrift der Holder-Kapitalkonten
         for holder_id, share in allocate_expense(ex.amount_eur, cfg).items():
+            if share >= 0:
+                hd, hc = CAPITAL_BY_HOLDER[holder_id].code, EXTERNAL_EXPENSES.code
+                hlabel = "Aufwandsanteil"
+            else:
+                hd, hc = EXTERNAL_EXPENSES.code, CAPITAL_BY_HOLDER[holder_id].code
+                hlabel = "Storno-Anteil"
             postings.append(
                 Posting(
                     date=ex.date,
-                    debit=CAPITAL_BY_HOLDER[holder_id].code,
-                    credit=EXTERNAL_EXPENSES.code,
-                    amount_eur=share,
-                    description=f"Aufwandsanteil {holder_id}: {ex.note}".strip(": "),
+                    debit=hd,
+                    credit=hc,
+                    amount_eur=abs(share),
+                    description=f"{hlabel} {holder_id}: {ex.note}".strip(": "),
                     source="expense",
                     ref=ex.note,
                 )

@@ -18,13 +18,6 @@ from eule.accounting.config import (
     HolderDef,
     PerformanceFee,
 )
-from eule.accounting.import_flex import (
-    aggregate,
-    parse_flex_csv,
-    parse_flex_files,
-    render_yaml,
-    to_eur,
-)
 from eule.accounting.journal import build_journal
 from eule.accounting.ledger import compute_account_balances
 from eule.accounting.manual_trades import _to_roundtrip, load_manual_trades
@@ -457,154 +450,196 @@ class TestManualTrades:
 
 
 # ─────────────────────────────────────────
-# Flex-CSV-Importer
+# SoF-Importer (Statement of Funds, definitive Cash-Wahrheit)
 # ─────────────────────────────────────────
 
 
-class TestFlexImporter:
-    def _csv(self, tmp_path, content: str):
-        p = tmp_path / "flex.csv"
+class TestSofImporter:
+    HEADER = (
+        '"AssetClass","Description","Conid","FXRateToBase","Amount","CurrencyPrimary",'
+        '"SettleDate","Date","ReportDate","Balance","TradePrice","TradeGross",'
+        '"TradeCommission","Expiry","TradeCode","LevelOfDetail"\n'
+    )
+
+    def _csv(self, tmp_path, content: str, name: str = "sof.csv"):
+        p = tmp_path / name
         p.write_text(content)
         return p
 
-    HEADER = (
-        '"UnderlyingSymbol","Symbol","TradeDate","NetCash","IBCommission",'
-        '"IBCommissionCurrency","Conid","UnderlyingConid","TradeID","IBExecID"\n'
-    )
-    FX_HEADER = '"Date/Time","FromCurrency","ToCurrency","Rate"\n'
-
-    def test_parses_trade_and_fx_rows(self, tmp_path):
-        path = self._csv(tmp_path, (
-            self.HEADER
-            + '"TLT","TLT","20250715","100","-1","USD","12345","12345","tid-1","exec-1"\n'
-            + self.FX_HEADER
-            + '"20250715","USD","EUR","0.92"\n'
-        ))
-        trades, fx = parse_flex_csv(path)
-        assert len(trades) == 1
-        assert trades[0].trade_id == "tid-1"
-        assert trades[0].ibexec_id == "exec-1"
-        assert trades[0].net_cash == 100.0
-        assert trades[0].currency == "USD"
-        assert len(fx) == 1
-        assert fx[0].rate == 0.92
-
-    def test_eur_conversion(self, tmp_path):
-        path = self._csv(tmp_path, (
-            self.HEADER
-            + '"TLT","TLT","20250715","100","-1","USD","12345","12345","tid-1","exec-1"\n'
-            + self.FX_HEADER
-            + '"20250715","USD","EUR","0.92"\n'
-        ))
-        trades, fx_lookup = parse_flex_files([path])
-        eur = to_eur(trades[0], fx_lookup)
-        assert eur == pytest.approx(92.0)
-
-    def test_eur_passthrough(self, tmp_path):
-        path = self._csv(tmp_path, (
-            self.HEADER
-            + '"ESTX50","ESTX50","20250715","50","-1","EUR","12345","12345","tid-1","exec-1"\n'
-        ))
-        trades, fx_lookup = parse_flex_files([path])
-        eur = to_eur(trades[0], fx_lookup)
-        assert eur == pytest.approx(50.0)
-
-    def test_dedup_across_files(self, tmp_path):
-        f1 = tmp_path / "a.csv"
-        f2 = tmp_path / "b.csv"
-        f1.write_text(
-            self.HEADER
-            + '"TLT","TLT","20250715","100","-1","USD","1","1","tid-1","exec-1"\n'
-            + self.FX_HEADER
-            + '"20250715","USD","EUR","0.92"\n'
+    def _row(self, asset_class, amount, date, desc=""):
+        return (
+            f'"{asset_class}","{desc}","","1","{amount}","EUR","{date}","{date}",'
+            f'"{date}","100","0","0","0","","","BaseCurrency"\n'
         )
-        f2.write_text(
-            self.HEADER
-            + '"TLT","TLT","20250715","100","-1","USD","1","1","tid-1","exec-1"\n'
-            + '"TLT","TLT","20250716","50","-1","USD","1","1","tid-2","exec-2"\n'
-            + self.FX_HEADER
-            + '"20250716","USD","EUR","0.93"\n'
-        )
-        trades, fx_lookup = parse_flex_files([f1, f2])
-        assert len(trades) == 2
-        ids = {t.trade_id for t in trades}
-        assert ids == {"tid-1", "tid-2"}
 
-    def test_aggregate_per_symbol_and_date(self, tmp_path):
+    def test_classify_trade_vs_fee_vs_transfer(self, tmp_path):
+        from eule.accounting.import_sof import classify, parse_sof_csv
         path = self._csv(tmp_path, (
             self.HEADER
-            + '"MNQ","MNQU5","20250715","235.5","-2.5","USD","1","1","tid-1","exec-1"\n'
-            + '"MNQ","MNQU5","20250715","-254.5","-2.5","USD","1","1","tid-2","exec-2"\n'
-            + '"MNQ","MNQU5","20250715","257.5","-2.5","USD","1","1","tid-3","exec-3"\n'
-            + self.FX_HEADER
-            + '"20250715","USD","EUR","0.90"\n'
+            + self._row("FUT", "-50.0", "20250715", "MES 20DEC25")
+            + self._row("",    "-9.27", "20250716")
+            + self._row("",    "2000.0", "20240729")  # Cash Receipt
         ))
-        trades, fx_lookup = parse_flex_files([path])
-        agg, skipped, fx_missing = aggregate(trades, fx_lookup, set())
+        rows = parse_sof_csv(path)
+        assert len(rows) == 3
+        kinds = sorted(classify(r) for r in rows)
+        assert kinds == ["fee", "trade", "transfer"]
+
+    def test_skips_non_basecurrency(self, tmp_path):
+        from eule.accounting.import_sof import parse_sof_csv
+        path = self._csv(tmp_path, (
+            self.HEADER
+            + self._row("FUT", "-50.0", "20250715", "MES")
+            # andere LevelOfDetail-Zeile (z.B. originale Trade-Detail-Zeile)
+            + '"FUT","MES","","1","-50","USD","20250715","20250715","20250715",'
+              '"100","0","0","0","","","TradeDetail"\n'
+        ))
+        rows = parse_sof_csv(path)
+        assert len(rows) == 1
+
+    def test_aggregate_trades_per_symbol_close_date(self, tmp_path):
+        """Alle Tages-Cashflows eines Symbols werden zu einem Roundtrip mit Close-Date."""
+        from eule.accounting.import_sof import aggregate_trades, parse_sof_csv
+        path = self._csv(tmp_path, (
+            self.HEADER
+            + self._row("FUT", "-50.0", "20250715", "MES 20DEC25")
+            + self._row("FUT", "30.0",  "20250715", "MES 20DEC25")
+            + self._row("FUT", "10.0",  "20250716", "MES 20DEC25")
+            + self._row("OPT", "20.0",  "20250715", "TLT 16JAN26 86 P")
+        ))
+        rows = parse_sof_csv(path)
+        agg = aggregate_trades(rows)
+        assert len(agg) == 2
+        by_desc = {a.description: a for a in agg}
+        # MES: -50 + 30 + 10 = -10, Close-Date = max(15, 15, 16) = 16
+        assert by_desc["MES 20DEC25"].pnl_eur == pytest.approx(-10.0)
+        assert by_desc["MES 20DEC25"].posting_date == date(2025, 7, 16)
+        assert by_desc["MES 20DEC25"].count == 3
+        # TLT: nur eine Zeile
+        assert by_desc["TLT 16JAN26 86 P"].pnl_eur == pytest.approx(20.0)
+        assert by_desc["TLT 16JAN26 86 P"].posting_date == date(2025, 7, 15)
+
+    def test_aggregate_fees_with_storno(self, tmp_path):
+        """Reversal-Posten heben fruehere Aufwendungen am gleichen Tag auf."""
+        from eule.accounting.import_sof import aggregate_fees, parse_sof_csv
+        path = self._csv(tmp_path, (
+            self.HEADER
+            + self._row("", "-9.18", "20250804")  # Aufwand
+            + self._row("",  "8.57", "20250804")  # Storno
+            + self._row("", "-2.00", "20250804")  # weiterer Aufwand
+        ))
+        rows = parse_sof_csv(path)
+        agg = aggregate_fees(rows)
         assert len(agg) == 1
-        assert agg[0].pnl_eur == pytest.approx(214.65, abs=0.01)
-        assert agg[0].symbol == "MNQU5"
-        assert len(agg[0].trade_ids) == 3
+        # Netto: -9.18 + 8.57 - 2.00 = -2.61 (Aufwand)
+        assert agg[0].netto_eur == pytest.approx(-2.61)
+        assert agg[0].count == 3
 
-    def test_skip_by_tradeid(self, tmp_path):
+    def test_skips_transfers_in_fee_aggregate(self, tmp_path):
+        """Cash Receipts / Disbursements (>= 100 EUR) sind keine Fees."""
+        from eule.accounting.import_sof import aggregate_fees, parse_sof_csv
         path = self._csv(tmp_path, (
             self.HEADER
-            + '"TLT","TLT","20250715","100","-1","EUR","1","1","known","exec-a"\n'
-            + '"TLT","TLT","20250716","200","-1","EUR","1","1","new","exec-b"\n'
+            + self._row("", "2000.0", "20240729")  # Cash Receipt
+            + self._row("", "-9.27",  "20240729")  # Fee
         ))
-        trades, fx_lookup = parse_flex_files([path])
-        agg, skipped, _ = aggregate(trades, fx_lookup, skip_trade_ids={"known"})
+        rows = parse_sof_csv(path)
+        agg = aggregate_fees(rows)
         assert len(agg) == 1
-        assert agg[0].pnl_eur == pytest.approx(200.0)
-        assert len(skipped) == 1
+        assert agg[0].netto_eur == pytest.approx(-9.27)
 
-    def test_skip_by_ibexec_id(self, tmp_path):
-        """skip_trade_ids matcht gegen TradeID UND IBExecID — die Hase-DB
-        koennte einen ExecID statt TradeID gespeichert haben."""
-        path = self._csv(tmp_path, (
+    def test_dedupe_across_files(self, tmp_path):
+        from eule.accounting.import_sof import parse_sof_files
+        f1 = self._csv(tmp_path, (
             self.HEADER
-            + '"TLT","TLT","20250715","100","-1","EUR","1","1","tid-1","exec-known"\n'
-            + '"TLT","TLT","20250716","200","-1","EUR","1","1","tid-2","exec-new"\n'
-        ))
-        trades, fx_lookup = parse_flex_files([path])
-        agg, skipped, _ = aggregate(trades, fx_lookup, skip_trade_ids={"exec-known"})
-        assert len(agg) == 1
-        assert agg[0].pnl_eur == pytest.approx(200.0)
-        assert len(skipped) == 1
-
-    def test_fx_conversion_trades_filtered(self, tmp_path):
-        path = self._csv(tmp_path, (
+            + self._row("FUT", "-50.0", "20250715", "MES")
+        ), name="a.csv")
+        f2 = self._csv(tmp_path, (
             self.HEADER
-            + '"","EUR.USD","20250430","0","-4.39","EUR","1","","tid-fx","exec-fx"\n'
-            + '"TLT","TLT","20250430","100","-1","EUR","2","2","tid-real","exec-real"\n'
-        ))
-        trades, fx_lookup = parse_flex_files([path])
-        agg, _, _ = aggregate(trades, fx_lookup, set())
-        assert len(agg) == 1
-        assert agg[0].symbol == "TLT"
+            + self._row("FUT", "-50.0", "20250715", "MES")  # dup
+            + self._row("FUT", "20.0",  "20250716", "MES")  # neu
+        ), name="b.csv")
+        rows = parse_sof_files([f1, f2])
+        assert len(rows) == 2
 
-    def test_fx_missing_reported(self, tmp_path):
-        path = self._csv(tmp_path, (
-            self.HEADER
-            + '"TLT","TLT","20250715","100","-1","USD","1","1","tid-1","exec-1"\n'
-        ))
-        trades, fx_lookup = parse_flex_files([path])
-        agg, _, fx_missing = aggregate(trades, fx_lookup, set())
-        assert len(agg) == 0
-        assert len(fx_missing) == 1
+    def test_render_fees_yaml_inverts_sign(self, tmp_path):
+        """SoF: negative amount = Aufwand. Buchhaltung will positiven Aufwand."""
+        from eule.accounting.import_sof import FeeAggregate, render_fees_yaml
+        out = render_fees_yaml([
+            FeeAggregate(posting_date=date(2025, 8, 4), netto_eur=-9.18, count=10),
+            FeeAggregate(posting_date=date(2025, 9, 3), netto_eur=2.50, count=2),
+        ])
+        # Aufwand-Tag: positiver amount_eur in cash.yaml
+        assert "amount_eur: 9.18" in out
+        # Storno-Tag: negativer amount_eur in cash.yaml
+        assert "amount_eur: -2.50" in out
+        assert "paid_from: broker" in out
 
-    def test_render_yaml_quotes_special_chars(self, tmp_path):
-        from eule.accounting.import_flex import AggregatedTrade
-        agg = [AggregatedTrade(
-            trade_date=date(2025, 5, 6),
-            symbol="C OEXP 20250506 5255 W",
-            underlying="ESTX50",
-            pnl_eur=45.55,
-            trade_ids=("1022140923", "1023060697"),
-        )]
-        out = render_yaml(agg)
-        # Symbol enthaelt Spaces aber keine Sonderzeichen → kein Quote noetig
-        assert "C OEXP 20250506 5255 W" in out
-        assert "45.55" in out
-        # Note enthaelt Pipe und Komma → muss gequotet sein
-        assert "tid=" in out
+    def test_render_trades_yaml(self, tmp_path):
+        from eule.accounting.import_sof import TradeAggregate, render_trades_yaml
+        out = render_trades_yaml([
+            TradeAggregate(
+                posting_date=date(2025, 7, 15),
+                description="MES 20DEC25",
+                asset_class="FUT",
+                pnl_eur=-20.0,
+                count=2,
+            ),
+        ])
+        assert "manual_trades:" in out
+        assert "MES 20DEC25" in out
+        assert "-20.00" in out
+        assert "FUT | sof" in out
+
+
+# ─────────────────────────────────────────
+# Negative expenses → Storno-Buchungen
+# ─────────────────────────────────────────
+
+
+class TestNegativeExpenses:
+    """Negative amount_eur in expenses muessen Soll/Haben umkehren (Storno)."""
+
+    def _ledger_with(self, amount_eur):
+        from eule.accounting.cash import CashExpense, CashLedger
+        return CashLedger(expenses=[
+            CashExpense(
+                date=date(2025, 8, 4),
+                amount_eur=amount_eur,
+                paid_from="broker",
+                note="Reversal",
+            )
+        ])
+
+    def test_positive_amount_books_as_expense(self):
+        from eule.accounting.journal import postings_for_cash
+        cfg = _cfg()
+        ps = postings_for_cash(self._ledger_with(10.0), cfg)
+        # Hauptbuchung: 6000 an 1200 (Aufwand)
+        main = [p for p in ps if "Aufwand" in p.description and "anteil" not in p.description.lower() and "Storno" not in p.description][0]
+        assert main.debit == "6000"
+        assert main.credit == "1200"
+        assert main.amount_eur == pytest.approx(10.0)
+
+    def test_negative_amount_books_as_storno(self):
+        from eule.accounting.journal import postings_for_cash
+        cfg = _cfg()
+        ps = postings_for_cash(self._ledger_with(-10.0), cfg)
+        # Hauptbuchung: 1200 an 6000 (Storno)
+        main = [p for p in ps if "Storno" in p.description and "Anteil" not in p.description][0]
+        assert main.debit == "1200"
+        assert main.credit == "6000"
+        assert main.amount_eur == pytest.approx(10.0)
+
+    def test_negative_amount_credits_holders(self):
+        """Bei Storno bekommen Holder Kapital gutgeschrieben statt belastet."""
+        from eule.accounting.journal import postings_for_cash
+        cfg = _cfg()
+        ps = postings_for_cash(self._ledger_with(-10.0), cfg)
+        holder_postings = [p for p in ps if "Storno-Anteil" in p.description]
+        assert len(holder_postings) == 2
+        # Bei 50:50 capital_share: jeder Holder bekommt 5 EUR Gutschrift
+        for p in holder_postings:
+            assert p.debit == "6000"  # 6000 an 0H00
+            assert p.credit.startswith("01")
+            assert p.amount_eur == pytest.approx(5.0)

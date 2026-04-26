@@ -19,7 +19,13 @@ from eule.accounting.export import (
     write_ledger_csv,
     write_tax_csv,
 )
-from eule.accounting.import_flex import aggregate, parse_flex_files, render_yaml
+from eule.accounting.import_sof import (
+    aggregate_fees as aggregate_sof_fees,
+    aggregate_trades as aggregate_sof_trades,
+    parse_sof_files,
+    render_fees_yaml as render_sof_fees_yaml,
+    render_trades_yaml as render_sof_trades_yaml,
+)
 from eule.accounting.journal import build_journal
 from eule.accounting.ledger import compute_account_balances, journal_is_balanced
 from eule.accounting.manual_trades import load_manual_trades
@@ -42,20 +48,6 @@ def _load_cfg() -> AccountingConfig:
     except AccountingConfigError as e:
         console.print(f"[red]Config-Fehler:[/red] {e}")
         raise typer.Exit(1)
-
-
-def _hase_trade_refs(cfg: AccountingConfig) -> set[str]:
-    """Liest alle nicht-NULL trade_ref-Werte aus der Hase-DB fuer das Environment.
-    Leeres Set wenn use_hase_db=false.
-    """
-    if not cfg.use_hase_db:
-        return set()
-    conn, runtime = get_env_info(cfg.env)
-    try:
-        trades = load_trades(conn, runtime)
-    finally:
-        conn.close()
-    return {t.trade_ref for t in trades if t.trade_ref}
 
 
 def _load_roundtrips(cfg: AccountingConfig) -> tuple[list[Roundtrip], int, int]:
@@ -276,66 +268,81 @@ def tax_cmd(
     )
 
 
-@accounting_app.command(name="import-flex")
-def import_flex_cmd(
-    files: list[Path] = typer.Argument(..., help="IBKR Flex-CSV-Dateien (eine oder mehrere)"),
-    out: str = typer.Option(
-        "", "--out", help="Ziel-YAML (Default: stdout). z.B. ~/Dokumente/obsidian/tradingGbr/manual_trades.yaml"
+@accounting_app.command(name="import-sof")
+def import_sof_cmd(
+    files: list[Path] = typer.Argument(
+        ..., help="IBKR-Statement-of-Funds-CSVs (Activity Flex Query, alle Types)"
     ),
-    skip_db: bool = typer.Option(
-        True, "--skip-db/--no-skip-db",
-        help="Trades, deren TradeID in Hase-DB existiert, ueberspringen (default: ja)",
+    out_trades: str = typer.Option(
+        "", "--out-trades", help="Ziel fuer Trade-YAML (Default: stdout)"
+    ),
+    out_fees: str = typer.Option(
+        "", "--out-fees", help="Ziel fuer Fees-YAML (Default: nach Trades auf stdout)"
     ),
 ) -> None:
-    """Importiert IBKR Flex-CSV(s) als manual_trades.yaml-Block.
+    """Importiert ein vollstaendiges IBKR-Statement-of-Funds.
 
-    Mehrere Dateien werden ueber TradeID dedupliziert. Aggregiert pro
-    (Symbol, Datum). USD/Fremdwaehrung wird per FX-Tabelle aus dem CSV
-    in EUR konvertiert. Trades, die in der Hase-DB als trade_ref bekannt
-    sind, werden ausgeschlossen.
+    Aus dem SoF werden zwei YAML-Bloecke erzeugt:
+      - manual_trades.yaml: ein Eintrag pro (Datum, Symbol, AssetClass)
+        mit dem fertig in EUR konvertierten PnL.
+      - cash.yaml expenses-Block: aggregiert pro Datum, mit Vorzeichen
+        (Storni werden als negativer amount_eur gerendert), paid_from: broker.
 
-    Default-Output ist stdout — zum Speichern: --out <pfad> oder shell-redirect.
+    Cash Receipts und Disbursements (|amount| >= 100 EUR) werden NICHT
+    importiert — sie stehen schon in cash.yaml als transfers.
+
+    Default-Output: beides nach stdout. Mit --out-trades / --out-fees in
+    separate Dateien schreiben.
     """
-    cfg = _load_cfg()
     files = [Path(p).expanduser() for p in files]
     for p in files:
         if not p.exists():
-            console.print(f"[red]Datei nicht gefunden:[/red] {p}", err=True)
+            console.print(f"[red]Datei nicht gefunden:[/red] {p}")
             raise typer.Exit(1)
 
-    db_refs = _hase_trade_refs(cfg) if skip_db else set()
-    flex_trades, fx_lookup = parse_flex_files(files)
-    aggregated, skipped, fx_missing = aggregate(flex_trades, fx_lookup, db_refs)
+    rows = parse_sof_files(files)
+    trades = aggregate_sof_trades(rows)
+    fees = aggregate_sof_fees(rows)
 
-    summary_lines = [
-        f"Aus {len(files)} Datei(en): {len(flex_trades)} Trade-Legs, "
-        f"{len(fx_lookup)} FX-Eintraege",
-        f"Skipped: {len(skipped)} (in Hase-DB), {len(fx_missing)} (FX-Rate fehlt)",
-        f"Importiert: {len(aggregated)} aggregierte Eintraege "
-        f"(pro Symbol+Datum eine Buchung)",
+    n_trade_rows = sum(1 for r in rows if r.asset_class)
+    n_fee_rows = sum(
+        1 for r in rows if not r.asset_class and abs(r.amount_eur) < 100
+    )
+    n_xfer_rows = sum(
+        1 for r in rows if not r.asset_class and abs(r.amount_eur) >= 100
+    )
+
+    pnl_total = sum(t.pnl_eur for t in trades)
+    fees_total = sum(a.netto_eur for a in fees)
+
+    summary = [
+        f"Aus {len(files)} SoF-Datei(en): {len(rows)} Cash-Bewegungen total",
+        f"  Trades:   {n_trade_rows:>4} Zeilen -> {len(trades)} Aggregate, "
+        f"Σ PnL {pnl_total:+,.2f} EUR",
+        f"  Fees:     {n_fee_rows:>4} Zeilen -> {len(fees)} Aggregate, "
+        f"Σ Netto {fees_total:+,.2f} EUR",
+        f"  Transfers (skipped): {n_xfer_rows} Zeilen "
+        "(stehen in cash.yaml als transfers)",
     ]
 
-    if fx_missing:
-        summary_lines.append("FX-Lecks:")
-        for t in fx_missing[:5]:
-            summary_lines.append(
-                f"  {t.trade_date} {t.symbol} {t.net_cash} {t.currency}"
-            )
-        if len(fx_missing) > 5:
-            summary_lines.append(f"  ... und {len(fx_missing)-5} weitere")
+    trades_text = render_sof_trades_yaml(trades, header_comment="\n".join(summary))
+    fees_text = render_sof_fees_yaml(fees, header_comment="\n".join(summary))
 
-    yaml_text = render_yaml(aggregated, header_comment="\n".join(summary_lines))
+    if out_trades:
+        Path(out_trades).expanduser().write_text(trades_text)
+        console.print(f"[green]Trades:[/green] {out_trades}")
+    if out_fees:
+        Path(out_fees).expanduser().write_text(fees_text)
+        console.print(f"[green]Fees:[/green] {out_fees}")
 
-    if out:
-        target = Path(out).expanduser()
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(yaml_text)
-        console.print(f"[green]Geschrieben:[/green] {target}")
-        for ln in summary_lines:
-            console.print(f"  {ln}")
-    else:
-        # YAML auf stdout, Summary auf stderr (damit Redirect sauber bleibt)
+    if not (out_trades or out_fees):
         import sys
-        for ln in summary_lines:
+        for ln in summary:
             print(f"# {ln}", file=sys.stderr)
-        typer.echo(yaml_text)
+        typer.echo("# === manual_trades.yaml block ===")
+        typer.echo(trades_text)
+        typer.echo("# === cash.yaml expenses block ===")
+        typer.echo(fees_text)
+    else:
+        for ln in summary:
+            console.print(f"  {ln}")
