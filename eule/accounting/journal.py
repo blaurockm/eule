@@ -132,10 +132,11 @@ def postings_for_cash(cash: CashLedger, cfg: AccountingConfig) -> list[Posting]:
 
     for d in cash.deposits:
         capital = CAPITAL_BY_HOLDER[d.holder]
+        # Einlagen kommen von aussen aufs Giro (nicht direkt aufs Broker-Konto).
         postings.append(
             Posting(
                 date=d.date,
-                debit=BROKER.code,
+                debit=GIRO.code,
                 credit=capital.code,
                 amount_eur=d.amount_eur,
                 description=f"Einlage {d.holder}: {d.note}".strip(": "),
@@ -147,19 +148,18 @@ def postings_for_cash(cash: CashLedger, cfg: AccountingConfig) -> list[Posting]:
     for w in cash.withdrawals:
         capital = CAPITAL_BY_HOLDER[w.holder]
         draw = DRAW_BY_HOLDER[w.holder]
-        # Schritt 1: Auszahlung an Privat
+        # Privatentnahme kommt vom Giro (nicht direkt vom Broker-Konto).
         postings.append(
             Posting(
                 date=w.date,
                 debit=draw.code,
-                credit=BROKER.code,
+                credit=GIRO.code,
                 amount_eur=w.amount_eur,
                 description=f"Entnahme {w.holder}: {w.note}".strip(": "),
                 source="withdrawal",
                 ref=w.holder,
             )
         )
-        # Schritt 2: Privat-Konto sofort gegen Kapital schliessen
         postings.append(
             Posting(
                 date=w.date,
@@ -172,45 +172,38 @@ def postings_for_cash(cash: CashLedger, cfg: AccountingConfig) -> list[Posting]:
             )
         )
 
+    # Cash-Transfers Broker <-> Giro (keine Holder-Bewegung)
+    account_map = {"broker": BROKER, "giro": GIRO}
+    for tr in cash.transfers:
+        src = account_map[tr.from_account]
+        dst = account_map[tr.to_account]
+        postings.append(
+            Posting(
+                date=tr.date,
+                debit=dst.code,
+                credit=src.code,
+                amount_eur=tr.amount_eur,
+                description=f"Transfer {tr.from_account}->{tr.to_account}: {tr.note}".strip(": "),
+                source="transfer",
+                ref=tr.note,
+            )
+        )
+
     for ex in cash.expenses:
-        if ex.paid_from == "giro":
-            # Schritt 1: Auszahlung vom Broker auf Giro-Referenzkonto
-            postings.append(
-                Posting(
-                    date=ex.date,
-                    debit=GIRO.code,
-                    credit=BROKER.code,
-                    amount_eur=ex.amount_eur,
-                    description=f"Auszahlung an Giro fuer: {ex.note}".strip(": "),
-                    source="expense",
-                    ref=ex.note,
-                )
+        # paid_from=giro: 6000 an 1100 (Geld muss per Transfer vorher dort sein)
+        # paid_from=broker: 6000 an 1200 (IBKR-direkte Gebuehren)
+        src_account = GIRO if ex.paid_from == "giro" else BROKER
+        postings.append(
+            Posting(
+                date=ex.date,
+                debit=EXTERNAL_EXPENSES.code,
+                credit=src_account.code,
+                amount_eur=ex.amount_eur,
+                description=f"Aufwand ({ex.paid_from}): {ex.note}".strip(": "),
+                source="expense",
+                ref=ex.note,
             )
-            # Schritt 2: Bezahlung des Aufwands aus Giro
-            postings.append(
-                Posting(
-                    date=ex.date,
-                    debit=EXTERNAL_EXPENSES.code,
-                    credit=GIRO.code,
-                    amount_eur=ex.amount_eur,
-                    description=f"Aufwand (via Giro): {ex.note}".strip(": "),
-                    source="expense",
-                    ref=ex.note,
-                )
-            )
-        else:  # paid_from == "broker"
-            # Direktbelastung vom Broker (IBKR-eigene Gebuehren)
-            postings.append(
-                Posting(
-                    date=ex.date,
-                    debit=EXTERNAL_EXPENSES.code,
-                    credit=BROKER.code,
-                    amount_eur=ex.amount_eur,
-                    description=f"Aufwand (Broker direkt): {ex.note}".strip(": "),
-                    source="expense",
-                    ref=ex.note,
-                )
-            )
+        )
 
         # Anteilige Belastung der Holder-Kapitalkonten (unabhaengig vom Zahlweg)
         for holder_id, share in allocate_expense(ex.amount_eur, cfg).items():

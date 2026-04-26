@@ -10,6 +10,7 @@ from eule.accounting.cash import (
     CashDeposit,
     CashExpense,
     CashLedger,
+    CashTransfer,
     CashWithdrawal,
 )
 from eule.accounting.config import (
@@ -244,49 +245,69 @@ class TestJournal:
         sum_balance = sum(b.balance for b in balances.values())
         assert sum_balance == pytest.approx(0.0, abs=0.01)
 
-    def test_giro_path_creates_intermediate_posting(self):
-        """expense paid_from=giro erzeugt 1100 an 1200 + 6000 an 1100 + 2x Holderanteil."""
+    def test_giro_path_only_books_expense(self):
+        """expense paid_from=giro erzeugt 6000 an 1100 + 2x Holderanteil — KEIN Auto-Withdraw."""
         cfg = _cfg()
         cash = CashLedger(
-            deposits=[],
-            withdrawals=[],
             expenses=[CashExpense(date(2024, 6, 1), 100.0, "Test", paid_from="giro")],
         )
         postings = build_journal([], cash, cfg)
-        assert len(postings) == 4  # giro-step + expense-step + 2 holder shares
-        # Giro-Konto wird beruehrt und endet auf 0
+        assert len(postings) == 3  # expense + 2 holder shares
         balances = compute_account_balances(postings)
-        assert balances["1100"].balance == pytest.approx(0.0)
-        # Broker hat -100 (Soll-Saldo)
-        assert balances["1200"].balance == pytest.approx(-100.0)
+        # Giro hat -100 Soll (weil Expense vom Giro abging, ohne dass es vorher Geld bekam)
+        # → in der Realitaet braucht es einen Transfer Broker→Giro davor
+        assert balances["1100"].balance == pytest.approx(-100.0)
+        # Broker bleibt unberuehrt (kein Auto-Withdraw mehr!)
+        assert balances["1200"].balance == pytest.approx(0.0)
 
     def test_broker_path_skips_giro(self):
-        """expense paid_from=broker erzeugt nur 6000 an 1200 + Holderanteil — kein Giro."""
+        """expense paid_from=broker erzeugt nur 6000 an 1200 + Holderanteile."""
         cfg = _cfg()
         cash = CashLedger(
-            deposits=[],
-            withdrawals=[],
             expenses=[CashExpense(date(2024, 6, 1), 50.0, "IBKR-Feed", paid_from="broker")],
         )
         postings = build_journal([], cash, cfg)
-        assert len(postings) == 3  # nur expense-step + 2 holder shares
+        assert len(postings) == 3
         balances = compute_account_balances(postings)
-        # Giro unberuehrt
+        # Giro unberuehrt, Broker hat -50
         assert balances["1100"].balance == pytest.approx(0.0)
-        assert balances["1100"].debit_total == 0.0
-        assert balances["1100"].credit_total == 0.0
+        assert balances["1200"].balance == pytest.approx(-50.0)
+
+    def test_transfer_broker_to_giro(self):
+        """Cash-Transfer ohne Aufwand: 1100 an 1200, keine Holder-Bewegung."""
+        cfg = _cfg()
+        cash = CashLedger(
+            transfers=[CashTransfer(date(2024, 6, 1), "broker", "giro", 500.0, "Reserve")],
+        )
+        postings = build_journal([], cash, cfg)
+        assert len(postings) == 1
+        balances = compute_account_balances(postings)
+        assert balances["1100"].balance == pytest.approx(500.0)   # Giro +500
+        assert balances["1200"].balance == pytest.approx(-500.0)  # Broker -500
+        assert balances["0100"].balance == pytest.approx(0.0)     # Holder unberuehrt
+        assert balances["0110"].balance == pytest.approx(0.0)
+
+    def test_giro_funded_expense_with_transfer(self):
+        """expense paid_from=giro + vorgaengiger Transfer: Giro endet bei 0."""
+        cfg = _cfg()
+        cash = CashLedger(
+            transfers=[CashTransfer(date(2024, 6, 1), "broker", "giro", 100.0, "")],
+            expenses=[CashExpense(date(2024, 6, 2), 100.0, "Test", paid_from="giro")],
+        )
+        postings = build_journal([], cash, cfg)
+        balances = compute_account_balances(postings)
+        assert balances["1100"].balance == pytest.approx(0.0)     # Transfer-rein, Aufwand-raus
+        assert balances["1200"].balance == pytest.approx(-100.0)  # nur einmal abgebucht
 
     def test_balances_unchanged_by_paid_from_choice(self):
         """Holder-Salden duerfen nicht davon abhaengen, ob via Giro oder direkt."""
         cfg = _cfg()
         cash_giro = CashLedger(
             deposits=[CashDeposit(date(2024, 1, 1), "A", 1000, "")],
-            withdrawals=[],
             expenses=[CashExpense(date(2024, 6, 1), 100.0, "", paid_from="giro")],
         )
         cash_broker = CashLedger(
             deposits=[CashDeposit(date(2024, 1, 1), "A", 1000, "")],
-            withdrawals=[],
             expenses=[CashExpense(date(2024, 6, 1), 100.0, "", paid_from="broker")],
         )
         from eule.accounting.balances import compute_balances

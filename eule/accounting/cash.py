@@ -1,6 +1,6 @@
 """Loader fuer tradingGbr/cash.yaml — Einlagen, Entnahmen, externe Kosten."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -30,16 +30,28 @@ class CashExpense:
     date: date
     amount_eur: float
     note: str = ""
-    # Wo wurde gezahlt? "giro" = via Giro-Referenzkonto (Default fuer manuelle Eintraege),
-    # "broker" = direkt vom Broker-Konto (z.B. IBKR-Datenfeed-Gebuehren).
+    # Wo wurde gezahlt?
+    #   "giro"   = vom Giro-Referenzkonto (Default — Geld muss vorher per Transfer dort sein)
+    #   "broker" = direkt vom Broker-Konto (z.B. IBKR-Datenfeed-Gebuehren)
     paid_from: str = "giro"
 
 
 @dataclass(frozen=True)
+class CashTransfer:
+    """Cash-Bewegung zwischen Giro und Broker (oder umgekehrt). Keine Holder-Bewegung."""
+    date: date
+    from_account: str    # "broker" oder "giro"
+    to_account: str      # "broker" oder "giro"
+    amount_eur: float
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class CashLedger:
-    deposits: list[CashDeposit]
-    withdrawals: list[CashWithdrawal]
-    expenses: list[CashExpense]
+    deposits: list[CashDeposit] = field(default_factory=list)
+    withdrawals: list[CashWithdrawal] = field(default_factory=list)
+    expenses: list[CashExpense] = field(default_factory=list)
+    transfers: list[CashTransfer] = field(default_factory=list)
 
 
 def _parse_date(value) -> date:
@@ -55,7 +67,7 @@ def load_cash(path: Path | None = None) -> CashLedger:
     path = path.expanduser()
 
     if not path.exists():
-        return CashLedger(deposits=[], withdrawals=[], expenses=[])
+        return CashLedger(deposits=[], withdrawals=[], expenses=[], transfers=[])
 
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
@@ -94,7 +106,32 @@ def load_cash(path: Path | None = None) -> CashLedger:
                     paid_from=paid_from,
                 )
             )
+        transfers = []
+        for t in raw.get("transfers") or []:
+            from_acc = str(t.get("from", "")).lower()
+            to_acc = str(t.get("to", "")).lower()
+            valid = {"broker", "giro"}
+            if from_acc not in valid or to_acc not in valid:
+                raise AccountingConfigError(
+                    f"transfer.from/to muss broker|giro sein: {t}"
+                )
+            if from_acc == to_acc:
+                raise AccountingConfigError(f"transfer.from == transfer.to: {t}")
+            transfers.append(
+                CashTransfer(
+                    date=_parse_date(t["date"]),
+                    from_account=from_acc,
+                    to_account=to_acc,
+                    amount_eur=float(t["amount_eur"]),
+                    note=str(t.get("note", "")),
+                )
+            )
     except (KeyError, ValueError) as e:
         raise AccountingConfigError(f"Fehler beim Parsen von {path}: {e}") from e
 
-    return CashLedger(deposits=deposits, withdrawals=withdrawals, expenses=expenses)
+    return CashLedger(
+        deposits=deposits,
+        withdrawals=withdrawals,
+        expenses=expenses,
+        transfers=transfers,
+    )

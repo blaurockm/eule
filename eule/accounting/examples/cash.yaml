@@ -1,5 +1,15 @@
-# Manuelle Cash-Bewegungen (Einlagen, Entnahmen, externe Kosten).
+# Manuelle Cash-Bewegungen fuer die GbR-Buchhaltung.
 # Ziel: ~/Dokumente/obsidian/tradingGbr/cash.yaml
+
+# Vier Sections:
+#   deposits:    Einlagen pro Holder. Buchung: 1100 an 0H00 (Geld kommt aufs Giro).
+#   withdrawals: Privatentnahmen pro Holder. Buchung: ueber Giro.
+#   expenses:    Aufwendungen. paid_from steuert die Quelle:
+#                  giro    (Default) → 6000 an 1100 (Giro muss vorher Geld haben)
+#                  broker            → 6000 an 1200 (z.B. IBKR-eigene Gebuehren)
+#   transfers:   Cash-Bewegungen Broker <-> Giro ohne Holder-Bezug.
+#                Buchung: <to> an <from>. Pflicht, damit das Giro fuer expenses
+#                und Privatentnahmen ueberhaupt Geld hat.
 
 deposits:
   - { date: 2024-01-15, holder: A, amount_eur: 50000, note: "Initial deposit" }
@@ -9,6 +19,14 @@ withdrawals:
   - { date: 2025-06-01, holder: A, amount_eur: 5000, note: "Privatentnahme" }
 
 expenses:
-  # Externe Kosten werden 50:50 (capital_share) auf beide Holder verteilt.
-  - { date: 2024-03-01, amount_eur: 49.90, note: "Tradingview Premium" }
-  - { date: 2024-12-31, amount_eur: 240.00, note: "IBKR Snapshot Subs Q4" }
+  - { date: 2024-03-01, amount_eur: 49.90, note: "Tradingview Premium" }                       # paid_from: giro (Default)
+  - { date: 2025-02-04, amount_eur: 5.36, note: "IBKR Snapshot Subs", paid_from: broker }      # IBKR-direkte Gebuehr
+
+transfers:
+  # Pro Einlage: Geld vom Giro aufs Broker, damit es tradierbar ist.
+  - { date: 2024-01-16, from: giro, to: broker, amount_eur: 100000, note: "Initiales Trading-Kapital" }
+  # Vor jeder vom Giro bezahlten expense: Geld vom Broker aufs Giro holen
+  # (kann konsolidiert werden — z.B. monatlich ein Sammeltransfer).
+  - { date: 2024-03-01, from: broker, to: giro, amount_eur: 49.90, note: "Bereitstellung Tradingview" }
+  # Vor Privatentnahme: Geld vom Broker aufs Giro
+  - { date: 2025-06-01, from: broker, to: giro, amount_eur: 5000, note: "Bereitstellung Privatentnahme" }
