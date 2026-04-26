@@ -1,0 +1,243 @@
+"""CLI fuer eule accounting — refresh, balances, journal, ledger, tax."""
+
+from datetime import date
+from pathlib import Path
+
+import typer
+
+from eule.accounting.balances import compute_balances
+from eule.accounting.cash import load_cash
+from eule.accounting.config import (
+    AccountingConfig,
+    AccountingConfigError,
+    load_accounting_config,
+    tradinggbr_dir,
+)
+from eule.accounting.export import (
+    write_balances_json,
+    write_journal_csv,
+    write_ledger_csv,
+    write_tax_csv,
+)
+from eule.accounting.journal import build_journal
+from eule.accounting.ledger import compute_account_balances, journal_is_balanced
+from eule.accounting.tax import tax_report
+from eule.bewertung.trades import detect_roundtrips, load_trades
+from eule.db import get_env_info
+from eule.models import Roundtrip
+from eule.output import console, output_json
+
+accounting_app = typer.Typer(
+    name="accounting",
+    help="GbR-Buchhaltung fuer Joint-Account real2-ibkr",
+    no_args_is_help=True,
+)
+
+
+def _load_cfg() -> AccountingConfig:
+    try:
+        return load_accounting_config()
+    except AccountingConfigError as e:
+        console.print(f"[red]Config-Fehler:[/red] {e}")
+        raise typer.Exit(1)
+
+
+def _load_roundtrips(cfg: AccountingConfig) -> list[Roundtrip]:
+    """Laedt alle Roundtrips fuer das in der Config gesetzte Environment."""
+    conn, runtime = get_env_info(cfg.env)
+    try:
+        trades = load_trades(conn, runtime)
+    finally:
+        conn.close()
+    return detect_roundtrips(trades)
+
+
+def _resolve_path(value: str) -> Path:
+    """Pfade werden relativ zum tradingGbr-Verzeichnis aufgeloest."""
+    p = Path(value).expanduser()
+    if not p.is_absolute():
+        p = (tradinggbr_dir() / p).resolve()
+    return p
+
+
+@accounting_app.command(name="refresh")
+def refresh_cmd(
+    format: str = typer.Option("markdown", "--format", help="markdown oder json"),
+) -> None:
+    """Laedt Trades + Cash, berechnet Salden, schreibt balances.json fuer Vercel-App."""
+    cfg = _load_cfg()
+    cash = load_cash()
+    rts = _load_roundtrips(cfg)
+    balances = compute_balances(rts, cash, cfg)
+
+    target_raw = cfg.balances_json_path
+    if not target_raw:
+        console.print("[red]config.yaml.output.balances_json ist leer[/red]")
+        raise typer.Exit(1)
+
+    target = _resolve_path(target_raw)
+    write_balances_json(balances, cfg, target)
+
+    if format == "json":
+        output_json(
+            {
+                "target": str(target),
+                "balances": [b.to_dict() for b in balances.values()],
+                "roundtrips_count": len(rts),
+                "deposits_count": len(cash.deposits),
+                "withdrawals_count": len(cash.withdrawals),
+                "expenses_count": len(cash.expenses),
+            }
+        )
+        return
+
+    console.print(f"[green]Refresh OK[/green] -> {target}")
+    console.print(
+        f"  {len(rts)} Roundtrips | {len(cash.deposits)} Einlagen | "
+        f"{len(cash.withdrawals)} Entnahmen | {len(cash.expenses)} Aufwendungen"
+    )
+    for b in balances.values():
+        console.print(
+            f"  {b.holder_id} ({b.name}): Saldo "
+            f"{b.balance:>12,.2f} {cfg.base_currency}"
+        )
+
+
+@accounting_app.command(name="balances")
+def balances_cmd(
+    holder: str = typer.Option("", "--holder", help="A oder B (leer = alle)"),
+    format: str = typer.Option("markdown", "--format", help="markdown oder json"),
+) -> None:
+    """Aktueller Saldo pro Holder (berechnete Sicht)."""
+    cfg = _load_cfg()
+    cash = load_cash()
+    rts = _load_roundtrips(cfg)
+    balances = compute_balances(rts, cash, cfg)
+
+    if holder:
+        if holder not in balances:
+            console.print(f"[red]Holder '{holder}' nicht in config[/red]")
+            raise typer.Exit(1)
+        balances = {holder: balances[holder]}
+
+    if format == "json":
+        output_json([b.to_dict() for b in balances.values()])
+        return
+
+    console.print("[bold]Salden[/bold]\n")
+    for b in balances.values():
+        console.print(f"[bold]{b.holder_id} — {b.name}[/bold]")
+        console.print(f"  Kapital (Einlagen-Entnahmen):    {b.capital:>12,.2f}")
+        console.print(f"  Anteil Trading-PnL:              {b.allocated_pnl:>12,.2f}")
+        console.print(f"  Anteil externe Aufwendungen:     {b.allocated_expenses:>12,.2f}")
+        console.print(f"  [bold]Saldo:[/bold]                          {b.balance:>12,.2f} {cfg.base_currency}")
+        console.print(f"  Stand: {b.as_of.isoformat()}\n")
+
+
+@accounting_app.command(name="journal")
+def journal_cmd(
+    year: int = typer.Option(0, "--year", help="Geschaeftsjahr (0 = alle)"),
+    format: str = typer.Option("markdown", "--format", help="markdown, json oder csv"),
+    out: str = typer.Option("", "--out", help="Pfad fuer CSV-Export (nur bei --format csv)"),
+) -> None:
+    """Buchungs-Journal (chronologisch, Doppik)."""
+    cfg = _load_cfg()
+    cash = load_cash()
+    rts = _load_roundtrips(cfg)
+    postings = build_journal(rts, cash, cfg)
+
+    if year:
+        postings = [p for p in postings if p.date.year == year]
+
+    if format == "json":
+        output_json([p.to_dict() for p in postings])
+        return
+
+    if format == "csv":
+        target = _resolve_path(out) if out else _resolve_path(f"journal_{year or 'all'}.csv")
+        write_journal_csv(postings, target)
+        console.print(f"[green]CSV geschrieben:[/green] {target} ({len(postings)} Buchungen)")
+        return
+
+    console.print(f"[bold]Journal[/bold] — {len(postings)} Buchungen\n")
+    for p in postings:
+        console.print(
+            f"  {p.date.isoformat()}  {p.debit} an {p.credit}  "
+            f"{p.amount_eur:>10,.2f}  {p.description}"
+        )
+
+    if not journal_is_balanced(postings):
+        console.print("\n[red]WARNUNG: Buchungen nicht ausgeglichen[/red]")
+
+
+@accounting_app.command(name="ledger")
+def ledger_cmd(
+    year: int = typer.Option(0, "--year", help="Geschaeftsjahr (0 = alle)"),
+    format: str = typer.Option("markdown", "--format", help="markdown, json oder csv"),
+    out: str = typer.Option("", "--out", help="Pfad fuer CSV-Export"),
+) -> None:
+    """Hauptbuch (Konten-Salden)."""
+    cfg = _load_cfg()
+    cash = load_cash()
+    rts = _load_roundtrips(cfg)
+    postings = build_journal(rts, cash, cfg)
+    if year:
+        postings = [p for p in postings if p.date.year == year]
+    balances = compute_account_balances(postings)
+
+    if format == "json":
+        output_json([balances[c].to_dict() for c in sorted(balances.keys())])
+        return
+
+    if format == "csv":
+        target = _resolve_path(out) if out else _resolve_path(f"ledger_{year or 'all'}.csv")
+        write_ledger_csv(balances, target)
+        console.print(f"[green]CSV geschrieben:[/green] {target}")
+        return
+
+    console.print("[bold]Hauptbuch[/bold]\n")
+    console.print(f"  {'Konto':6} {'Bezeichnung':40} {'Soll':>14} {'Haben':>14} {'Saldo':>14}")
+    for code in sorted(balances.keys()):
+        b = balances[code]
+        console.print(
+            f"  {b.code:6} {b.name[:40]:40} {b.debit_total:>14,.2f} "
+            f"{b.credit_total:>14,.2f} {b.balance:>14,.2f}"
+        )
+
+
+@accounting_app.command(name="tax")
+def tax_cmd(
+    year: int = typer.Option(date.today().year, "--year", help="Geschaeftsjahr"),
+    format: str = typer.Option("markdown", "--format", help="markdown, json oder csv"),
+    out: str = typer.Option("", "--out", help="Pfad fuer CSV-Export"),
+) -> None:
+    """Steuer-Report: Kapitaleinkuenfte + Honorar pro Holder."""
+    cfg = _load_cfg()
+    cash = load_cash()
+    rts = _load_roundtrips(cfg)
+    expenses_year = sum(e.amount_eur for e in cash.expenses if e.date.year == year)
+    lines = tax_report(rts, cfg, expenses_total=expenses_year, year=year)
+
+    if format == "json":
+        output_json([ln.to_dict() for ln in lines])
+        return
+
+    if format == "csv":
+        target = _resolve_path(out) if out else _resolve_path(f"tax_{year}.csv")
+        write_tax_csv(lines, target)
+        console.print(f"[green]CSV geschrieben:[/green] {target}")
+        return
+
+    console.print(f"[bold]Steuer-Report {year}[/bold]\n")
+    console.print(
+        f"  {'Holder':8} {'Name':25} {'Kapitaleinkuenfte':>20} {'Honorar (§18)':>16} {'Aufwand-Anteil':>16}"
+    )
+    for ln in lines:
+        console.print(
+            f"  {ln.holder_id:8} {ln.holder_name[:25]:25} "
+            f"{ln.capital_income:>20,.2f} {ln.self_employment:>16,.2f} {ln.expenses_share:>16,.2f}"
+        )
+    console.print(
+        "\n[dim]Hinweis: Kapitaleinkuenfte → Anlage KAP. Honorar → Anlage S. "
+        "B kann Honorar nicht als Werbungskosten abziehen (§20 Abs. 9 EStG).[/dim]"
+    )

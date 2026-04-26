@@ -1,0 +1,170 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #0f172a;
+  --bg-elev: #1e293b;
+  --bg-row: #243348;
+  --fg: #f1f5f9;
+  --fg-dim: #94a3b8;
+  --accent: #38bdf8;
+  --positive: #4ade80;
+  --negative: #f87171;
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+#app {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 24px 20px 40px;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.state-loading,
+.state-empty,
+.state-error {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 16px;
+}
+
+.state-empty h1,
+.state-error h1 {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.state-empty p,
+.state-error p {
+  color: var(--fg-dim);
+}
+
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--bg-row);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── balance state ──────────────────────────── */
+
+header {
+  margin-bottom: 32px;
+}
+
+.eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  margin-bottom: 6px;
+}
+
+#holder-name {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.hero {
+  background: var(--bg-elev);
+  border-radius: 16px;
+  padding: 24px;
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+.hero-label {
+  font-size: 13px;
+  color: var(--fg-dim);
+  margin-bottom: 8px;
+}
+
+.hero-amount {
+  font-size: 44px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
+.hero-currency {
+  font-size: 22px;
+  color: var(--fg-dim);
+  margin-left: 6px;
+}
+
+.breakdown {
+  background: var(--bg-elev);
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.row {
+  padding: 14px 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.row + .row {
+  border-top: 1px solid var(--bg-row);
+}
+
+.row-label {
+  color: var(--fg-dim);
+}
+
+.row-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.row-value.positive { color: var(--positive); }
+.row-value.negative { color: var(--negative); }
+
+footer {
+  margin-top: 24px;
+  text-align: center;
+}
+
+.meta {
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+@media (max-width: 360px) {
+  .hero-amount { font-size: 36px; }
+  #holder-name { font-size: 22px; }
+}

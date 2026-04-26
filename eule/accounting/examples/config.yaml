@@ -1,0 +1,29 @@
+# Beispiel-Konfiguration fuer eule accounting
+# Ziel: ~/Dokumente/obsidian/tradingGbr/config.yaml
+# (Override: Umgebungsvariable EULE_TRADINGGBR_DIR)
+
+account:
+  env: real2-ibkr           # → eule.db.RUNTIME_NAMES → "ibkr-two"
+  base_currency: EUR
+
+holders:
+  - id: A
+    name: "Markus Blaurock"
+    capital_share: 0.50
+  - id: B
+    name: "..."              # zweiter Holder
+    capital_share: 0.50
+
+operator: A
+
+performance_fee:
+  pct: 0.10                  # 10% Taetigkeitsverguetung
+  base: per_winning_roundtrip
+  recipient: A
+
+fiscal_year_start: "01-01"   # Kalenderjahr
+
+output:
+  # Pfad ist relativ zum tradingGbr-Verzeichnis (oder absolut moeglich).
+  # Wird von 'eule accounting refresh' geschrieben.
+  balances_json: "../../fin/eule/web/balances.json"

@@ -1,0 +1,12 @@
+# Auth-Tokens fuer die Vercel-Share-App.
+# Ziel: ~/Dokumente/obsidian/tradingGbr/tokens.yaml
+# Generierung z.B. via:  python -c "import secrets; print(secrets.token_urlsafe(32))"
+#
+# WICHTIG: Diese Datei NICHT ins Repo committen (Obsidian-Vault-Sync ist OK,
+# solange der Vault privat ist).
+
+tokens:
+  - holder: A
+    token: "REPLACE_ME_with_at_least_32_random_characters"
+  - holder: B
+    token: "REPLACE_ME_with_at_least_32_random_characters"

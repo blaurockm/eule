@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>tradingGbr</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main id="app">
+    <div class="state state-loading" id="loading">
+      <div class="spinner"></div>
+      <p>Lade…</p>
+    </div>
+
+    <div class="state state-empty hidden" id="empty">
+      <h1>tradingGbr</h1>
+      <p>Kein gueltiger Zugriffstoken.</p>
+    </div>
+
+    <div class="state state-error hidden" id="error">
+      <h1>Fehler</h1>
+      <p id="error-message"></p>
+    </div>
+
+    <div class="state state-balance hidden" id="balance">
+      <header>
+        <p class="eyebrow">tradingGbr</p>
+        <h1 id="holder-name"></h1>
+      </header>
+
+      <section class="hero">
+        <p class="hero-label">Saldo</p>
+        <p class="hero-amount">
+          <span id="balance-amount"></span>
+          <span class="hero-currency" id="currency"></span>
+        </p>
+      </section>
+
+      <section class="breakdown">
+        <div class="row">
+          <span class="row-label">Kapital (Einlagen − Entnahmen)</span>
+          <span class="row-value" id="capital"></span>
+        </div>
+        <div class="row">
+          <span class="row-label">Anteil Trading-PnL</span>
+          <span class="row-value" id="pnl"></span>
+        </div>
+        <div class="row">
+          <span class="row-label">Anteil externe Kosten</span>
+          <span class="row-value" id="expenses"></span>
+        </div>
+      </section>
+
+      <footer>
+        <p class="meta">
+          Stand <span id="as-of"></span>
+          · aktualisiert <span id="generated-at"></span>
+        </p>
+      </footer>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

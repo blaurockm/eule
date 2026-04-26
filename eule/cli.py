@@ -10,6 +10,7 @@ load_dotenv()  # .env im Arbeitsverzeichnis laden (EULE_DB_* etc.)
 
 import typer
 
+from eule.accounting import cli as accounting
 from eule.bestand import cli as bestand
 from eule.bewertung import cli as bewertung
 from eule.pipeline import cli as pipeline
@@ -47,6 +48,9 @@ app.add_typer(betrieb.schedule_app)
 app.command()(betrieb.precheck)
 app.command()(betrieb.bot)
 app.command()(betrieb.serve)
+
+# ── Accounting: GbR-Buchhaltung ─────────────────────
+app.add_typer(accounting.accounting_app)
 
 if __name__ == "__main__":
     app()

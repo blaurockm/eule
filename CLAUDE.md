@@ -16,6 +16,7 @@ Teil des Trading-Ökosystems (Hase, Hamster, Dachs, Igel, Fuchs, Elster).
 - **Hase-Runtime-Monitoring** (Precheck, Baselines, Anomalie-Alerts)
 - **Hamster-Pipeline-Check** (Data Lake Freshness, Timer-Status)
 - **Telegram Bot** (Wachtel: interaktiver Monitor mit Claude-Agent)
+- **GbR-Buchhaltung** (Joint-Account real2-ibkr: Doppik, asymmetrische Verteilung, Vercel-Share-App)
 
 ## Spezifikation
 
@@ -43,6 +44,7 @@ DB-Zugang über Umgebungsvariablen (in `~/eule/.env` auf systematic):
 | `EULE_DB_STAGING_IBKR` | Staging IBKR | `postgresql://...` |
 | `EULE_DB_STAGING_HL` | Staging HL | `postgresql://...` |
 | `EULE_HASE_DIR` | Hase-Verzeichnis (Logs, Fuchs) | `~/fin/hase` (default) |
+| `EULE_TRADINGGBR_DIR` | tradingGbr-Buchhaltungsdaten | `~/Dokumente/obsidian/tradingGbr` (default) |
 
 ## Regeln
 
@@ -70,6 +72,35 @@ DB-Zugang über Umgebungsvariablen (in `~/eule/.env` auf systematic):
 - `eule precheck` — Health-Check (Hase-APIs gegen Baselines)
 - `eule bot` — Wachtel Telegram Bot
 - `eule ep` — EP Scanner, Trades, Morning Brief + Email
+- `eule accounting` — GbR-Buchhaltung fuer Joint-Account real2-ibkr (refresh, balances, journal, ledger, tax)
+
+### Eule Accounting (GbR-Buchhaltung)
+
+Modul `eule.accounting` fuer den Joint-Account hinter `EULE_DB_REAL2_IBKR`.
+
+**Verteilungsregeln** (asymmetrisch):
+- Trading-Gewinne: 50:50 Kapitaleinkunft + 10% Taetigkeitsverguetung an Operator (= 60:40 wirtschaftlich)
+- Trading-Verluste: 50:50 (keine Verguetung)
+- Externe Kosten: 50:50
+- Zinsen/Dividenden: nicht erfasst (User-Entscheidung)
+
+**Datenquellen** (alle in `~/Dokumente/obsidian/tradingGbr/`, Override via `EULE_TRADINGGBR_DIR`):
+- `config.yaml` — Holders, Operator, Verguetungsregel, Pfad zur balances.json
+- `cash.yaml` — Einlagen, Entnahmen, externe Kosten (manuell gepflegt)
+- `tokens.yaml` — Token pro Holder fuer Vercel-App-URL
+
+Beispiel-Templates: `eule/accounting/examples/*.yaml`.
+
+**Outputs**:
+- `eule accounting balances --format json` — berechnete Sicht (Saldo pro Holder)
+- `eule accounting journal --year YYYY --format csv` — Doppik-Journal fuer Steuerberater
+- `eule accounting ledger --year YYYY --format csv` — Hauptbuch (Konten-Salden)
+- `eule accounting tax --year YYYY --format csv` — Steuer-Report (Kapitaleinkuenfte + Honorar)
+- `eule accounting refresh` — schreibt `web/balances.json` fuer die Vercel-App
+
+**Vercel-App** (`web/`): vanilla HTML+JS, kein Build. Vercel-Project auf das Repo zeigen, Root Directory = `web/`. Workflow: `eule accounting refresh && git push`.
+
+**Steuerlicher Hinweis**: 60:40 als Verteilung von Kapitaleinkuenften ist im DE-Steuerrecht ungewoehnlich. Saubere Modellierung: 50:50 ans Finanzamt + Honorar (§18 EStG) fuer den Operator. Hat Doppelbesteuerung zur Folge (§20 Abs. 9 EStG, kein Werbungskostenabzug). Vor Live-Gang mit Steuerberater abstimmen.
 
 ### Offen (Phase 2: Trade Journal)
 

@@ -1,0 +1,14 @@
+# Manuelle Cash-Bewegungen (Einlagen, Entnahmen, externe Kosten).
+# Ziel: ~/Dokumente/obsidian/tradingGbr/cash.yaml
+
+deposits:
+  - { date: 2024-01-15, holder: A, amount_eur: 50000, note: "Initial deposit" }
+  - { date: 2024-01-15, holder: B, amount_eur: 50000, note: "Initial deposit" }
+
+withdrawals:
+  - { date: 2025-06-01, holder: A, amount_eur: 5000, note: "Privatentnahme" }
+
+expenses:
+  # Externe Kosten werden 50:50 (capital_share) auf beide Holder verteilt.
+  - { date: 2024-03-01, amount_eur: 49.90, note: "Tradingview Premium" }
+  - { date: 2024-12-31, amount_eur: 240.00, note: "IBKR Snapshot Subs Q4" }
