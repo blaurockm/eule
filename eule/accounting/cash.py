@@ -30,6 +30,9 @@ class CashExpense:
     date: date
     amount_eur: float
     note: str = ""
+    # Wo wurde gezahlt? "giro" = via Giro-Referenzkonto (Default fuer manuelle Eintraege),
+    # "broker" = direkt vom Broker-Konto (z.B. IBKR-Datenfeed-Gebuehren).
+    paid_from: str = "giro"
 
 
 @dataclass(frozen=True)
@@ -76,14 +79,21 @@ def load_cash(path: Path | None = None) -> CashLedger:
             )
             for e in raw.get("withdrawals") or []
         ]
-        expenses = [
-            CashExpense(
-                date=_parse_date(e["date"]),
-                amount_eur=float(e["amount_eur"]),
-                note=str(e.get("note", "")),
+        expenses = []
+        for e in raw.get("expenses") or []:
+            paid_from = str(e.get("paid_from", "giro")).lower()
+            if paid_from not in ("giro", "broker"):
+                raise AccountingConfigError(
+                    f"expenses[{e}].paid_from muss 'giro' oder 'broker' sein, war '{paid_from}'"
+                )
+            expenses.append(
+                CashExpense(
+                    date=_parse_date(e["date"]),
+                    amount_eur=float(e["amount_eur"]),
+                    note=str(e.get("note", "")),
+                    paid_from=paid_from,
+                )
             )
-            for e in raw.get("expenses") or []
-        ]
     except (KeyError, ValueError) as e:
         raise AccountingConfigError(f"Fehler beim Parsen von {path}: {e}") from e
 

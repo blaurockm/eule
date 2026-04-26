@@ -12,6 +12,7 @@ class Account:
 
 CAPITAL_A = Account("0100", "equity", "Kapital A")
 CAPITAL_B = Account("0110", "equity", "Kapital B")
+GIRO = Account("1100", "asset", "Giro-Referenzkonto (Durchlauf)")
 BROKER = Account("1200", "asset", "Verrechnung Broker (real2-ibkr)")
 TRADING_GAINS = Account("4000", "revenue", "Trading-Gewinne (netto, realisiert)")
 TRADING_LOSSES = Account("5000", "expense", "Trading-Verluste (netto, realisiert)")
@@ -23,6 +24,7 @@ DRAW_B = Account("9010", "draw", "Privatentnahme B")
 ALL_ACCOUNTS: list[Account] = [
     CAPITAL_A,
     CAPITAL_B,
+    GIRO,
     BROKER,
     TRADING_GAINS,
     TRADING_LOSSES,

@@ -244,6 +244,57 @@ class TestJournal:
         sum_balance = sum(b.balance for b in balances.values())
         assert sum_balance == pytest.approx(0.0, abs=0.01)
 
+    def test_giro_path_creates_intermediate_posting(self):
+        """expense paid_from=giro erzeugt 1100 an 1200 + 6000 an 1100 + 2x Holderanteil."""
+        cfg = _cfg()
+        cash = CashLedger(
+            deposits=[],
+            withdrawals=[],
+            expenses=[CashExpense(date(2024, 6, 1), 100.0, "Test", paid_from="giro")],
+        )
+        postings = build_journal([], cash, cfg)
+        assert len(postings) == 4  # giro-step + expense-step + 2 holder shares
+        # Giro-Konto wird beruehrt und endet auf 0
+        balances = compute_account_balances(postings)
+        assert balances["1100"].balance == pytest.approx(0.0)
+        # Broker hat -100 (Soll-Saldo)
+        assert balances["1200"].balance == pytest.approx(-100.0)
+
+    def test_broker_path_skips_giro(self):
+        """expense paid_from=broker erzeugt nur 6000 an 1200 + Holderanteil — kein Giro."""
+        cfg = _cfg()
+        cash = CashLedger(
+            deposits=[],
+            withdrawals=[],
+            expenses=[CashExpense(date(2024, 6, 1), 50.0, "IBKR-Feed", paid_from="broker")],
+        )
+        postings = build_journal([], cash, cfg)
+        assert len(postings) == 3  # nur expense-step + 2 holder shares
+        balances = compute_account_balances(postings)
+        # Giro unberuehrt
+        assert balances["1100"].balance == pytest.approx(0.0)
+        assert balances["1100"].debit_total == 0.0
+        assert balances["1100"].credit_total == 0.0
+
+    def test_balances_unchanged_by_paid_from_choice(self):
+        """Holder-Salden duerfen nicht davon abhaengen, ob via Giro oder direkt."""
+        cfg = _cfg()
+        cash_giro = CashLedger(
+            deposits=[CashDeposit(date(2024, 1, 1), "A", 1000, "")],
+            withdrawals=[],
+            expenses=[CashExpense(date(2024, 6, 1), 100.0, "", paid_from="giro")],
+        )
+        cash_broker = CashLedger(
+            deposits=[CashDeposit(date(2024, 1, 1), "A", 1000, "")],
+            withdrawals=[],
+            expenses=[CashExpense(date(2024, 6, 1), 100.0, "", paid_from="broker")],
+        )
+        from eule.accounting.balances import compute_balances
+        b_giro = compute_balances([], cash_giro, cfg)
+        b_broker = compute_balances([], cash_broker, cfg)
+        assert b_giro["A"].balance == pytest.approx(b_broker["A"].balance)
+        assert b_giro["B"].balance == pytest.approx(b_broker["B"].balance)
+
     def test_balances_match_capital_account_balances(self):
         """Berechnete Sicht == Saldo der Kapital-Konten aus Doppik."""
         cfg = _cfg()

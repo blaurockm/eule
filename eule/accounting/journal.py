@@ -30,6 +30,7 @@ from eule.accounting.chart import (
     CAPITAL_BY_HOLDER,
     DRAW_BY_HOLDER,
     EXTERNAL_EXPENSES,
+    GIRO,
     TRADING_GAINS,
     TRADING_LOSSES,
 )
@@ -172,18 +173,46 @@ def postings_for_cash(cash: CashLedger, cfg: AccountingConfig) -> list[Posting]:
         )
 
     for ex in cash.expenses:
-        # Aufwand erst aufs Kostenkonto, dann anteilig den Holdern belasten
-        postings.append(
-            Posting(
-                date=ex.date,
-                debit=EXTERNAL_EXPENSES.code,
-                credit=BROKER.code,
-                amount_eur=ex.amount_eur,
-                description=f"Aufwand: {ex.note}".strip(": "),
-                source="expense",
-                ref=ex.note,
+        if ex.paid_from == "giro":
+            # Schritt 1: Auszahlung vom Broker auf Giro-Referenzkonto
+            postings.append(
+                Posting(
+                    date=ex.date,
+                    debit=GIRO.code,
+                    credit=BROKER.code,
+                    amount_eur=ex.amount_eur,
+                    description=f"Auszahlung an Giro fuer: {ex.note}".strip(": "),
+                    source="expense",
+                    ref=ex.note,
+                )
             )
-        )
+            # Schritt 2: Bezahlung des Aufwands aus Giro
+            postings.append(
+                Posting(
+                    date=ex.date,
+                    debit=EXTERNAL_EXPENSES.code,
+                    credit=GIRO.code,
+                    amount_eur=ex.amount_eur,
+                    description=f"Aufwand (via Giro): {ex.note}".strip(": "),
+                    source="expense",
+                    ref=ex.note,
+                )
+            )
+        else:  # paid_from == "broker"
+            # Direktbelastung vom Broker (IBKR-eigene Gebuehren)
+            postings.append(
+                Posting(
+                    date=ex.date,
+                    debit=EXTERNAL_EXPENSES.code,
+                    credit=BROKER.code,
+                    amount_eur=ex.amount_eur,
+                    description=f"Aufwand (Broker direkt): {ex.note}".strip(": "),
+                    source="expense",
+                    ref=ex.note,
+                )
+            )
+
+        # Anteilige Belastung der Holder-Kapitalkonten (unabhaengig vom Zahlweg)
         for holder_id, share in allocate_expense(ex.amount_eur, cfg).items():
             postings.append(
                 Posting(
