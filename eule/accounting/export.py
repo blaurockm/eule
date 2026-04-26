@@ -36,13 +36,42 @@ def load_tokens(path: Path | None = None) -> dict[str, str]:
     return out
 
 
+def _display_symbol(symbol: str) -> str:
+    """Schneidet Note-Anhang aus dem Symbol ab (manual_trades fuegt '(note)' an)."""
+    return symbol.split(" (")[0]
+
+
+def _recent_trades(roundtrips, limit: int = 3) -> list[dict]:
+    """Liefert die letzten N Roundtrips (chronologisch nach exit_date) als Dict-Liste."""
+    sorted_rts = sorted(roundtrips, key=lambda r: r.exit_ts, reverse=True)[:limit]
+    return [
+        {
+            "date": r.exit_date.isoformat(),
+            "symbol": _display_symbol(r.symbol),
+            "pnl_eur": round(r.pnl, 2),
+        }
+        for r in sorted_rts
+    ]
+
+
 def write_balances_json(
     balances: dict[str, HolderBalance],
     cfg: AccountingConfig,
     target_path: Path,
+    roundtrips=None,
 ) -> None:
-    """Schreibt balances.json fuer die Vercel-App. Pro Token nur der eigene Saldo."""
+    """Schreibt balances.json fuer die Vercel-App.
+
+    Pro Token: nur die Broker-Sicht des Holders + die letzten 3 Trades global.
+    """
     tokens = load_tokens()
+    recent = _recent_trades(roundtrips or [])
+
+    def _r(v: float) -> float:
+        # Vermeidet -0.0 in JSON-Output durch Round-trip-Mathematik
+        x = round(v, 2)
+        return 0.0 if x == 0.0 else x
+
     payload = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "tokens": {},
@@ -54,12 +83,14 @@ def write_balances_json(
         payload["tokens"][token] = {
             "holder_id": b.holder_id,
             "name": b.name,
-            "balance": round(b.balance, 2),
-            "capital": round(b.capital, 2),
-            "allocated_pnl": round(b.allocated_pnl, 2),
-            "allocated_expenses": round(b.allocated_expenses, 2),
+            "balance_broker": _r(b.balance_broker),
+            "balance_giro": _r(b.balance_giro),
+            "capital": _r(b.capital),
+            "allocated_pnl": _r(b.allocated_pnl),
+            "allocated_expenses": _r(b.allocated_expenses),
             "as_of": b.as_of.isoformat(),
             "currency": cfg.base_currency,
+            "recent_trades": recent,
         }
 
     target_path = target_path.expanduser()

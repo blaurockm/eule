@@ -30,14 +30,22 @@ class Posting:
 
 @dataclass(frozen=True)
 class HolderBalance:
-    """Saldo eines Holders (berechnete Sicht fuer Vercel-App)."""
+    """Saldo eines Holders (berechnete Sicht fuer Vercel-App).
+
+    `balance` ist der wirtschaftliche Gesamt-Anteil. Davon liegt anteilig
+    `balance_broker` auf dem Broker-Konto (trading-aktiv) und `balance_giro`
+    auf dem Giro-Referenzkonto (Reserve / unterwegs zu/von Aufwendungen).
+    Aufteilung proportional zum Anteil der Konto-Salden am Gesamt-Aktivum.
+    """
 
     holder_id: str
     name: str
-    capital: float            # Summe Einlagen - Summe Entnahmen
-    allocated_pnl: float      # Anteil am Trading-PnL nach Verteilungsregel
-    allocated_expenses: float # Anteil an externen Kosten
-    balance: float            # capital + allocated_pnl - allocated_expenses
+    capital: float
+    allocated_pnl: float
+    allocated_expenses: float
+    balance: float
+    balance_broker: float
+    balance_giro: float
     as_of: date
 
     def to_dict(self) -> dict[str, Any]:
@@ -48,6 +56,8 @@ class HolderBalance:
             "allocated_pnl": round(self.allocated_pnl, 2),
             "allocated_expenses": round(self.allocated_expenses, 2),
             "balance": round(self.balance, 2),
+            "balance_broker": round(self.balance_broker, 2),
+            "balance_giro": round(self.balance_giro, 2),
             "as_of": self.as_of.isoformat(),
         }
 

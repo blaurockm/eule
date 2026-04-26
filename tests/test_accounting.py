@@ -180,6 +180,31 @@ class TestBalances:
         assert b["A"].balance == pytest.approx(750.0)
         assert b["B"].balance == pytest.approx(950.0)
 
+    def test_balance_split_into_broker_and_giro(self):
+        """Wenn Geld auf Giro liegt, wird der Holder-Saldo proportional aufgeteilt."""
+        cfg = _cfg()
+        # Einlage 1000 ans Giro, Transfer 800 aufs Broker → Giro=200, Broker=800
+        cash = CashLedger(
+            deposits=[CashDeposit(date(2024, 1, 1), "A", 1000, "")],
+            transfers=[CashTransfer(date(2024, 1, 2), "giro", "broker", 800.0, "")],
+        )
+        b = compute_balances([], cash, cfg)
+        # A.balance = 1000, davon Broker 80% (800/1000), Giro 20% (200/1000)
+        assert b["A"].balance == pytest.approx(1000.0)
+        assert b["A"].balance_broker == pytest.approx(800.0)
+        assert b["A"].balance_giro == pytest.approx(200.0)
+
+    def test_balance_split_zero_giro(self):
+        """Wenn Giro = 0 ist, liegt der gesamte Holder-Saldo auf Broker."""
+        cfg = _cfg()
+        cash = CashLedger(
+            deposits=[CashDeposit(date(2024, 1, 1), "A", 1000, "")],
+            transfers=[CashTransfer(date(2024, 1, 2), "giro", "broker", 1000.0, "")],
+        )
+        b = compute_balances([], cash, cfg)
+        assert b["A"].balance_broker == pytest.approx(1000.0)
+        assert b["A"].balance_giro == pytest.approx(0.0)
+
     def test_balance_conservation(self):
         """Summe aller Holder-Salden == Summe Deposits + PnL - Expenses - Withdrawals."""
         cfg = _cfg()

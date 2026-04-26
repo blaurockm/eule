@@ -31,10 +31,13 @@
       </header>
 
       <section class="hero">
-        <p class="hero-label">Saldo</p>
+        <p class="hero-label">Saldo Broker-Konto</p>
         <p class="hero-amount">
           <span id="balance-amount"></span>
           <span class="hero-currency" id="currency"></span>
+        </p>
+        <p class="hero-sub hidden" id="giro-line">
+          Reserve auf Giro: <span id="giro-amount"></span>
         </p>
       </section>
 
@@ -51,6 +54,11 @@
           <span class="row-label">Anteil externe Kosten</span>
           <span class="row-value" id="expenses"></span>
         </div>
+      </section>
+
+      <section class="trades">
+        <p class="section-label">Letzte 3 Trades</p>
+        <ul class="trade-list" id="recent-trades"></ul>
       </section>
 
       <footer>

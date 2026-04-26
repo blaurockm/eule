@@ -78,7 +78,7 @@ html, body {
 /* ── balance state ──────────────────────────── */
 
 header {
-  margin-bottom: 32px;
+  margin-bottom: 24px;
 }
 
 .eyebrow {
@@ -99,7 +99,7 @@ header {
   background: var(--bg-elev);
   border-radius: 16px;
   padding: 24px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   text-align: center;
 }
 
@@ -123,10 +123,18 @@ header {
   margin-left: 6px;
 }
 
+.hero-sub {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
 .breakdown {
   background: var(--bg-elev);
   border-radius: 16px;
   overflow: hidden;
+  margin-bottom: 16px;
 }
 
 .row {
@@ -153,6 +161,67 @@ header {
 
 .row-value.positive { color: var(--positive); }
 .row-value.negative { color: var(--negative); }
+
+/* ── recent trades ──────────────────────────── */
+
+.trades {
+  background: var(--bg-elev);
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.section-label {
+  padding: 14px 18px 8px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.trade-list {
+  list-style: none;
+}
+
+.trade-list li {
+  padding: 12px 18px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  border-top: 1px solid var(--bg-row);
+}
+
+.trade-date {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.trade-symbol {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trade-pnl {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.trade-pnl.positive { color: var(--positive); }
+.trade-pnl.negative { color: var(--negative); }
+
+.trade-empty {
+  padding: 16px 18px !important;
+  color: var(--fg-dim);
+  font-style: italic;
+  text-align: center;
+}
+
+/* ── footer ──────────────────────────── */
 
 footer {
   margin-top: 24px;
