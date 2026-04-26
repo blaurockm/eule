@@ -17,6 +17,13 @@ from eule.accounting.config import (
     HolderDef,
     PerformanceFee,
 )
+from eule.accounting.import_flex import (
+    aggregate,
+    parse_flex_csv,
+    parse_flex_files,
+    render_yaml,
+    to_eur,
+)
 from eule.accounting.journal import build_journal
 from eule.accounting.ledger import compute_account_balances
 from eule.accounting.manual_trades import _to_roundtrip, load_manual_trades
@@ -349,3 +356,128 @@ class TestManualTrades:
         alloc = allocate_pnl(rt.pnl, cfg)
         assert alloc.operator_share == pytest.approx(60.0)
         assert alloc.other_share == pytest.approx(40.0)
+
+
+# ─────────────────────────────────────────
+# Flex-CSV-Importer
+# ─────────────────────────────────────────
+
+
+class TestFlexImporter:
+    def _csv(self, tmp_path, content: str):
+        p = tmp_path / "flex.csv"
+        p.write_text(content)
+        return p
+
+    def test_parses_trade_and_fx_rows(self, tmp_path):
+        path = self._csv(tmp_path, (
+            '"UnderlyingSymbol","Symbol","TradeDate","NetCash","IBCommission","IBCommissionCurrency","Conid","UnderlyingConid","TradeID"\n'
+            '"TLT","TLT","20250715","100","-1","USD","12345","12345","tid-1"\n'
+            '"ReportDate","FromCurrency","ToCurrency","Rate"\n'
+            '"20250715","USD","EUR","0.92"\n'
+        ))
+        trades, fx = parse_flex_csv(path)
+        assert len(trades) == 1
+        assert trades[0].trade_id == "tid-1"
+        assert trades[0].net_cash == 100.0
+        assert trades[0].currency == "USD"
+        assert len(fx) == 1
+        assert fx[0].rate == 0.92
+
+    def test_eur_conversion(self, tmp_path):
+        path = self._csv(tmp_path, (
+            '"TLT","TLT","20250715","100","-1","USD","12345","12345","tid-1"\n'
+            '"20250715","USD","EUR","0.92"\n'
+        ))
+        trades, fx_lookup = parse_flex_files([path])
+        eur = to_eur(trades[0], fx_lookup)
+        assert eur == pytest.approx(92.0)
+
+    def test_eur_passthrough(self, tmp_path):
+        path = self._csv(tmp_path, (
+            '"ESTX50","ESTX50","20250715","50","-1","EUR","12345","12345","tid-1"\n'
+        ))
+        trades, fx_lookup = parse_flex_files([path])
+        eur = to_eur(trades[0], fx_lookup)
+        assert eur == pytest.approx(50.0)
+
+    def test_dedup_across_files(self, tmp_path):
+        f1 = tmp_path / "a.csv"
+        f2 = tmp_path / "b.csv"
+        f1.write_text(
+            '"TLT","TLT","20250715","100","-1","USD","1","1","tid-1"\n'
+            '"20250715","USD","EUR","0.92"\n'
+        )
+        f2.write_text(
+            '"TLT","TLT","20250715","100","-1","USD","1","1","tid-1"\n'  # selbe TradeID
+            '"TLT","TLT","20250716","50","-1","USD","1","1","tid-2"\n'   # neu
+            '"20250716","USD","EUR","0.93"\n'
+        )
+        trades, fx_lookup = parse_flex_files([f1, f2])
+        assert len(trades) == 2  # Dedup ueber TradeID
+        ids = {t.trade_id for t in trades}
+        assert ids == {"tid-1", "tid-2"}
+
+    def test_aggregate_per_symbol_and_date(self, tmp_path):
+        path = self._csv(tmp_path, (
+            '"MNQ","MNQU5","20250715","235.5","-2.5","USD","1","1","tid-1"\n'
+            '"MNQ","MNQU5","20250715","-254.5","-2.5","USD","1","1","tid-2"\n'
+            '"MNQ","MNQU5","20250715","257.5","-2.5","USD","1","1","tid-3"\n'
+            '"20250715","USD","EUR","0.90"\n'
+        ))
+        trades, fx_lookup = parse_flex_files([path])
+        agg, skipped, fx_missing = aggregate(trades, fx_lookup, set())
+        assert len(agg) == 1
+        # Sum: 235.5 - 254.5 + 257.5 = 238.5 USD * 0.90 = 214.65 EUR
+        assert agg[0].pnl_eur == pytest.approx(214.65, abs=0.01)
+        assert agg[0].symbol == "MNQU5"
+        assert len(agg[0].trade_ids) == 3
+
+    def test_skip_known_db_trades(self, tmp_path):
+        path = self._csv(tmp_path, (
+            '"TLT","TLT","20250715","100","-1","EUR","1","1","known"\n'
+            '"TLT","TLT","20250716","200","-1","EUR","1","1","new"\n'
+        ))
+        trades, fx_lookup = parse_flex_files([path])
+        agg, skipped, _ = aggregate(trades, fx_lookup, skip_trade_ids={"known"})
+        assert len(agg) == 1
+        assert agg[0].pnl_eur == pytest.approx(200.0)
+        assert len(skipped) == 1
+        assert skipped[0].trade_id == "known"
+
+    def test_fx_conversion_trades_filtered(self, tmp_path):
+        """Symbole wie EUR.USD (FX-Conversion) sind keine Trades."""
+        path = self._csv(tmp_path, (
+            '"","EUR.USD","20250430","0","-4.39","EUR","1","","tid-fx"\n'
+            '"TLT","TLT","20250430","100","-1","EUR","2","2","tid-real"\n'
+        ))
+        trades, fx_lookup = parse_flex_files([path])
+        agg, _, _ = aggregate(trades, fx_lookup, set())
+        assert len(agg) == 1
+        assert agg[0].symbol == "TLT"
+
+    def test_fx_missing_reported(self, tmp_path):
+        path = self._csv(tmp_path, (
+            '"TLT","TLT","20250715","100","-1","USD","1","1","tid-1"\n'
+            # keine FX-Zeile → fx_missing
+        ))
+        trades, fx_lookup = parse_flex_files([path])
+        agg, _, fx_missing = aggregate(trades, fx_lookup, set())
+        assert len(agg) == 0
+        assert len(fx_missing) == 1
+
+    def test_render_yaml_quotes_special_chars(self, tmp_path):
+        from eule.accounting.import_flex import AggregatedTrade
+        agg = [AggregatedTrade(
+            trade_date=date(2025, 5, 6),
+            symbol="C OEXP 20250506 5255 W",
+            underlying="ESTX50",
+            pnl_eur=45.55,
+            trade_ids=("1022140923", "1023060697"),
+        )]
+        out = render_yaml(agg)
+        # Symbol enthaelt Spaces aber keine Sonderzeichen → kein Quote noetig
+        assert "C OEXP 20250506 5255 W" in out
+        assert "45.55" in out
+        # Note enthaelt Pipe und Komma → muss gequotet sein
+        assert "tid=" in out
