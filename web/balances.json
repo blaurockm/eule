@@ -1,4 +1,25 @@
 {
-  "generated_at": "1970-01-01T00:00:00",
-  "tokens": {}
+  "generated_at": "2026-04-26T12:59:13",
+  "tokens": {
+    "dmhwYYmsI84GmTrGysK-nJuPtOlGCPmUQX9Yi5h4Zmo": {
+      "holder_id": "A",
+      "name": "Markus Blaurock",
+      "balance": 5971.06,
+      "capital": 5050.0,
+      "allocated_pnl": 1943.7,
+      "allocated_expenses": 1022.65,
+      "as_of": "2026-04-26",
+      "currency": "EUR"
+    },
+    "Q-mrNa3YMHRJh1PrYQt-bPAJHcATYupYEchWp6qG3fc": {
+      "holder_id": "B",
+      "name": "CaH",
+      "balance": 15273.16,
+      "capital": 15000.0,
+      "allocated_pnl": 1295.8,
+      "allocated_expenses": 1022.65,
+      "as_of": "2026-04-26",
+      "currency": "EUR"
+    }
+  }
 }

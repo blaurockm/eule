@@ -24,6 +24,6 @@ performance_fee:
 fiscal_year_start: "01-01"   # Kalenderjahr
 
 output:
-  # Pfad ist relativ zum tradingGbr-Verzeichnis (oder absolut moeglich).
-  # Wird von 'eule accounting refresh' geschrieben.
-  balances_json: "../../fin/eule/web/balances.json"
+  # Wird von 'eule accounting refresh' geschrieben. Absoluter Pfad (mit ~) ist robuster
+  # als ein relativer (haengt sonst vom CWD ab).
+  balances_json: "~/fin/eule/web/balances.json"
