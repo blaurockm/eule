@@ -1,12 +1,12 @@
 """Steuer-Report fuer den Steuerberater.
 
-Trennt zwischen:
-- Kapitaleinkuenfte pro Holder (50:50, fuer Steuererklaerung)
-- Honorar an Operator (Taetigkeitsverguetung, Einkuenfte aus selbstaendiger Arbeit nach §18 EStG)
+Symmetrische Verteilungs-Logik (60:40): alle Trade-Ergebnisse werden 60:40
+zwischen Operator und Other aufgeteilt — Gewinne wie Verluste. Damit gibt es
+KEINEN Honorar-Anteil mehr; alles ist Kapitaleinkunft (§20 EStG, Anlage KAP).
 
-Hinweis: B kann das gezahlte Honorar NICHT als Werbungskosten abziehen
-(§20 Abs. 9 EStG, Werbungskosten-Pauschale via Sparer-Pauschbetrag).
-Diese Doppelbesteuerung ist im Modell akzeptiert.
+Externe Aufwendungen werden nach reinem capital_share aufgeteilt und sind
+information-only — bei Kapitaleinkuenften nicht als Werbungskosten abziehbar
+(§20 Abs. 9 EStG, Sparer-Pauschbetrag deckt das ab).
 """
 
 from dataclasses import dataclass
@@ -21,16 +21,14 @@ from eule.models import Roundtrip
 class TaxLine:
     holder_id: str
     holder_name: str
-    capital_income: float       # Kapitaleinkuenfte (50% des Trade-PnLs, fuer Anlage KAP)
-    self_employment: float      # Honorar (nur Operator, fuer Anlage S)
-    expenses_share: float       # Anteilige externe Kosten (Info-only, nicht abzugsfaehig)
+    capital_income: float       # 60:40-Anteil am Trading-Ergebnis (Anlage KAP)
+    expenses_share: float       # Anteilige externe Kosten (info-only)
 
     def to_dict(self) -> dict:
         return {
             "holder_id": self.holder_id,
             "holder_name": self.holder_name,
             "capital_income": round(self.capital_income, 2),
-            "self_employment": round(self.self_employment, 2),
             "expenses_share": round(self.expenses_share, 2),
         }
 
@@ -41,28 +39,24 @@ def tax_report(
     expenses_total: float,
     year: int | None = None,
 ) -> list[TaxLine]:
-    """Erzeugt eine Zeile pro Holder mit Kapitaleinkuenften und ggf. Honorar."""
+    """Erzeugt eine Zeile pro Holder mit Kapitaleinkuenften."""
     if year is not None:
         roundtrips = [r for r in roundtrips if r.exit_date.year == year]
 
     cap_income = {h.id: 0.0 for h in cfg.holders}
-    honorar = {h.id: 0.0 for h in cfg.holders}
-
     operator = cfg.operator
     other = next(h.id for h in cfg.holders if h.id != operator)
 
     for rt in roundtrips:
         alloc = allocate_pnl(rt.pnl, cfg)
-        cap_income[operator] += alloc.capital_share_operator
-        cap_income[other] += alloc.capital_share_other
-        honorar[operator] += alloc.performance_fee  # nur Operator bekommt das
+        cap_income[operator] += alloc.operator_share
+        cap_income[other] += alloc.other_share
 
     return [
         TaxLine(
             holder_id=h.id,
             holder_name=h.name,
             capital_income=cap_income[h.id],
-            self_employment=honorar[h.id],
             expenses_share=expenses_total * h.capital_share,
         )
         for h in cfg.holders

@@ -154,7 +154,6 @@ def write_tax_csv(lines: list[TaxLine], target_path: Path) -> None:
                 "Holder",
                 "Name",
                 "Kapitaleinkuenfte (Anlage KAP)",
-                "Honorar/Selbstaendig (Anlage S)",
                 "Aufwandsanteil (Info)",
             ]
         )
@@ -164,7 +163,6 @@ def write_tax_csv(lines: list[TaxLine], target_path: Path) -> None:
                     ln.holder_id,
                     ln.holder_name,
                     f"{ln.capital_income:.2f}",
-                    f"{ln.self_employment:.2f}",
                     f"{ln.expenses_share:.2f}",
                 ]
             )

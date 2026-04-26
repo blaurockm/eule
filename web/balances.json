@@ -1,13 +1,13 @@
 {
-  "generated_at": "2026-04-26T18:22:14",
+  "generated_at": "2026-04-26T18:40:17",
   "tokens": {
     "dmhwYYmsI84GmTrGysK-nJuPtOlGCPmUQX9Yi5h4Zmo": {
       "holder_id": "A",
       "name": "Markus Blaurock",
-      "balance_broker": 1582.7,
-      "balance_giro": 2439.29,
+      "balance_broker": 1254.83,
+      "balance_giro": 1933.97,
       "capital": 5050.0,
-      "allocated_pnl": 80.32,
+      "allocated_pnl": -752.86,
       "allocated_expenses": 1108.33,
       "as_of": "2026-04-26",
       "currency": "EUR",
@@ -32,10 +32,10 @@
     "Q-mrNa3YMHRJh1PrYQt-bPAJHcATYupYEchWp6qG3fc": {
       "holder_id": "B",
       "name": "CaH",
-      "balance_broker": 4941.16,
-      "balance_giro": 7615.42,
+      "balance_broker": 5269.03,
+      "balance_giro": 8120.74,
       "capital": 15000.0,
-      "allocated_pnl": -1335.09,
+      "allocated_pnl": -501.91,
       "allocated_expenses": 1108.33,
       "as_of": "2026-04-26",
       "currency": "EUR",

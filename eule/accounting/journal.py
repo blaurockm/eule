@@ -1,26 +1,30 @@
 """Buchungs-Generator: Roundtrips + Cash → Postings (Doppik).
 
-Buchungslogik (siehe Plan):
+Buchungslogik (symmetrisch — siehe allocator.py):
 
 Gewinn-Roundtrip pnl=G > 0:
-    1200 an 4000   G                      Verrechnung gewinnt
-    4000 an 0?00   G * capital_share      Steuerlicher Anteil pro Holder
-    0(other) an 0(operator)   G * fee_pct  Taetigkeitsverguetung intern
+    1200 an 4000      G                                          Verrechnung gewinnt
+    4000 an 0(op)00   capital_share*G + premium*G                Anteil Operator
+    4000 an 0(ot)00   capital_share*G - premium*G                Anteil Other
 
-Verlust-Roundtrip pnl=V <= 0:
-    5000 an 1200   |V|
-    0?00 an 5000   |V| * capital_share
+Verlust-Roundtrip pnl=V <= 0  (premium-Anteil zulasten Operator):
+    5000 an 1200      |V|
+    0(op)00 an 5000   |capital_share*V + premium*V|              Verlustanteil Operator
+    0(ot)00 an 5000   |capital_share*V - premium*V|              Verlustanteil Other
 
 Externe Kosten K:
-    6000 an 1200   K
-    0?00 an 6000   K * capital_share
+    6000 an 1100|1200   K  (Quelle: paid_from)
+    0?00 an 6000        K * capital_share
 
 Einlage E von Holder H:
-    1200 an 0H00   E
+    1100 an 0H00   E    (Geld kommt aufs Giro)
 
 Entnahme W von Holder H:
-    9H00 an 1200   W
-    0H00 an 9H00   W      (sofort verrechnet)
+    9H00 an 1100   W
+    0H00 an 9H00   W    (sofort verrechnet)
+
+Cash-Transfer Broker <-> Giro:
+    <to> an <from>   K  (keine Holder-Bewegung)
 """
 
 from eule.accounting.allocator import allocate_expense, allocate_pnl
@@ -40,15 +44,22 @@ from eule.models import Roundtrip
 
 
 def postings_for_roundtrip(rt: Roundtrip, cfg: AccountingConfig) -> list[Posting]:
-    """Erzeugt Doppik-Buchungen fuer einen einzelnen Roundtrip."""
+    """Erzeugt Doppik-Buchungen fuer einen einzelnen Roundtrip.
+
+    Symmetrische 60:40-Aufteilung: Operator traegt premium*pnl mehr (positiv
+    bei Gewinn, negativ bei Verlust). Drei Buchungen je Roundtrip — keine
+    separate Honorar-Buchung.
+    """
     pnl = rt.pnl
+    if pnl == 0:
+        return []
     ref = f"{rt.symbol}@{rt.exit_date.isoformat()}"
     operator = cfg.operator
     other = next(h.id for h in cfg.holders if h.id != operator)
+    alloc = allocate_pnl(pnl, cfg)
 
     if pnl > 0:
-        alloc = allocate_pnl(pnl, cfg)
-        postings = [
+        return [
             Posting(
                 date=rt.exit_date,
                 debit=BROKER.code,
@@ -62,8 +73,8 @@ def postings_for_roundtrip(rt: Roundtrip, cfg: AccountingConfig) -> list[Posting
                 date=rt.exit_date,
                 debit=TRADING_GAINS.code,
                 credit=CAPITAL_BY_HOLDER[operator].code,
-                amount_eur=alloc.capital_share_operator,
-                description=f"Kapitalanteil {operator}",
+                amount_eur=alloc.operator_share,
+                description=f"Anteil {operator}",
                 source="trade",
                 ref=ref,
             ),
@@ -71,30 +82,15 @@ def postings_for_roundtrip(rt: Roundtrip, cfg: AccountingConfig) -> list[Posting
                 date=rt.exit_date,
                 debit=TRADING_GAINS.code,
                 credit=CAPITAL_BY_HOLDER[other].code,
-                amount_eur=alloc.capital_share_other,
-                description=f"Kapitalanteil {other}",
+                amount_eur=alloc.other_share,
+                description=f"Anteil {other}",
                 source="trade",
                 ref=ref,
             ),
         ]
-        if alloc.performance_fee > 0:
-            postings.append(
-                Posting(
-                    date=rt.exit_date,
-                    debit=CAPITAL_BY_HOLDER[other].code,
-                    credit=CAPITAL_BY_HOLDER[operator].code,
-                    amount_eur=alloc.performance_fee,
-                    description=f"Taetigkeitsverguetung {other}->{operator}",
-                    source="performance_fee",
-                    ref=ref,
-                )
-            )
-        return postings
 
-    # Verlust
     abs_v = abs(pnl)
-    alloc = allocate_pnl(pnl, cfg)
-    postings = [
+    return [
         Posting(
             date=rt.exit_date,
             debit=TRADING_LOSSES.code,
@@ -108,7 +104,7 @@ def postings_for_roundtrip(rt: Roundtrip, cfg: AccountingConfig) -> list[Posting
             date=rt.exit_date,
             debit=CAPITAL_BY_HOLDER[operator].code,
             credit=TRADING_LOSSES.code,
-            amount_eur=abs(alloc.capital_share_operator),
+            amount_eur=abs(alloc.operator_share),
             description=f"Verlustanteil {operator}",
             source="trade",
             ref=ref,
@@ -117,13 +113,12 @@ def postings_for_roundtrip(rt: Roundtrip, cfg: AccountingConfig) -> list[Posting
             date=rt.exit_date,
             debit=CAPITAL_BY_HOLDER[other].code,
             credit=TRADING_LOSSES.code,
-            amount_eur=abs(alloc.capital_share_other),
+            amount_eur=abs(alloc.other_share),
             description=f"Verlustanteil {other}",
             source="trade",
             ref=ref,
         ),
     ]
-    return postings
 
 
 def postings_for_cash(cash: CashLedger, cfg: AccountingConfig) -> list[Posting]:

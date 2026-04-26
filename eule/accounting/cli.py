@@ -236,7 +236,7 @@ def tax_cmd(
     format: str = typer.Option("markdown", "--format", help="markdown, json oder csv"),
     out: str = typer.Option("", "--out", help="Pfad fuer CSV-Export"),
 ) -> None:
-    """Steuer-Report: Kapitaleinkuenfte + Honorar pro Holder."""
+    """Steuer-Report: Kapitaleinkuenfte pro Holder (60:40 symmetrisch)."""
     cfg = _load_cfg()
     cash = load_cash()
     rts, _, _ = _load_roundtrips(cfg)
@@ -255,16 +255,17 @@ def tax_cmd(
 
     console.print(f"[bold]Steuer-Report {year}[/bold]\n")
     console.print(
-        f"  {'Holder':8} {'Name':25} {'Kapitaleinkuenfte':>20} {'Honorar (§18)':>16} {'Aufwand-Anteil':>16}"
+        f"  {'Holder':8} {'Name':25} {'Kapitaleinkuenfte':>20} {'Aufwand-Anteil':>16}"
     )
     for ln in lines:
         console.print(
             f"  {ln.holder_id:8} {ln.holder_name[:25]:25} "
-            f"{ln.capital_income:>20,.2f} {ln.self_employment:>16,.2f} {ln.expenses_share:>16,.2f}"
+            f"{ln.capital_income:>20,.2f} {ln.expenses_share:>16,.2f}"
         )
     console.print(
-        "\n[dim]Hinweis: Kapitaleinkuenfte → Anlage KAP. Honorar → Anlage S. "
-        "B kann Honorar nicht als Werbungskosten abziehen (§20 Abs. 9 EStG).[/dim]"
+        "\n[dim]Hinweis: 60:40-Verteilung in beide Richtungen, alles Kapitaleinkuenfte "
+        "(Anlage KAP). Aufwandsanteil ist info-only, nicht als Werbungskosten abziehbar "
+        "(§20 Abs. 9 EStG).[/dim]"
     )
 
 

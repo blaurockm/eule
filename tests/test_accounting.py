@@ -82,40 +82,46 @@ def _rt(pnl: float, exit_date: date | None = None) -> Roundtrip:
 
 class TestAllocator:
     def test_winning_trade_60_40_split(self):
-        """Gewinn 100€ -> A=60, B=40 mit 10% Fee."""
+        """Gewinn 100€ -> A=60, B=40."""
         alloc = allocate_pnl(100.0, _cfg())
         assert alloc.operator_share == pytest.approx(60.0)
         assert alloc.other_share == pytest.approx(40.0)
         assert alloc.performance_fee == pytest.approx(10.0)
-        assert alloc.capital_share_operator == pytest.approx(50.0)
-        assert alloc.capital_share_other == pytest.approx(50.0)
 
-    def test_losing_trade_50_50_split(self):
-        """Verlust -100€ -> A=-50, B=-50, KEINE Fee."""
+    def test_losing_trade_60_40_symmetric(self):
+        """Verlust -100€ -> A traegt 60 (-60), B traegt 40 (-40). Symmetrisch."""
         alloc = allocate_pnl(-100.0, _cfg())
-        assert alloc.operator_share == pytest.approx(-50.0)
-        assert alloc.other_share == pytest.approx(-50.0)
-        assert alloc.performance_fee == 0.0
+        assert alloc.operator_share == pytest.approx(-60.0)
+        assert alloc.other_share == pytest.approx(-40.0)
+        assert alloc.performance_fee == pytest.approx(-10.0)
 
-    def test_zero_pnl_no_fee(self):
+    def test_zero_pnl(self):
         alloc = allocate_pnl(0.0, _cfg())
         assert alloc.performance_fee == 0.0
         assert alloc.operator_share == 0.0
         assert alloc.other_share == 0.0
 
-    def test_mix_of_trades_per_trade_logic(self):
-        """Mix +100, -50: Fee NUR auf +100, nicht auf Saldo +50."""
+    def test_mix_of_trades_60_40_throughout(self):
+        """Mix +100, -50: 60:40 in beide Richtungen, Saldo 60% A / 40% B."""
         cfg = _cfg()
         win = allocate_pnl(100.0, cfg)
         loss = allocate_pnl(-50.0, cfg)
         a_total = win.operator_share + loss.operator_share
         b_total = win.other_share + loss.other_share
-        # A: 60 + (-25) = 35
-        # B: 40 + (-25) = 15
+        # A: 60 + (-30) = 30
+        # B: 40 + (-20) = 20
         # Sum: 50 (= net P&L)
-        assert a_total == pytest.approx(35.0)
-        assert b_total == pytest.approx(15.0)
+        assert a_total == pytest.approx(30.0)
+        assert b_total == pytest.approx(20.0)
         assert (a_total + b_total) == pytest.approx(50.0)
+
+    def test_capital_share_equals_total_share(self):
+        """In symmetrischer Logik: capital_share_* == operator/other_share."""
+        cfg = _cfg()
+        for pnl in (100.0, -100.0, 50.0):
+            a = allocate_pnl(pnl, cfg)
+            assert a.capital_share_operator == pytest.approx(a.operator_share)
+            assert a.capital_share_other == pytest.approx(a.other_share)
 
     def test_expense_split(self):
         out = allocate_expense(100.0, _cfg())
@@ -153,10 +159,11 @@ class TestBalances:
         )
         rts = [_rt(100.0), _rt(-50.0)]
         b = compute_balances(rts, cash, _cfg())
-        # A: 50000 + 35 = 50035
-        # B: 50000 + 15 = 50015
-        assert b["A"].balance == pytest.approx(50035.0)
-        assert b["B"].balance == pytest.approx(50015.0)
+        # symmetrisch 60:40
+        # A: 50000 + 60 + (-30) = 50030
+        # B: 50000 + 40 + (-20) = 50020
+        assert b["A"].balance == pytest.approx(50030.0)
+        assert b["B"].balance == pytest.approx(50020.0)
 
     def test_with_withdrawal_and_expense(self):
         cash = CashLedger(
@@ -227,24 +234,26 @@ class TestBalances:
 
 
 class TestJournal:
-    def test_winning_trade_creates_four_postings(self):
-        """Gewinn-Trade: 3 Buchungen (Verrechnung, Anteil A, Anteil B) + Fee = 4."""
+    def test_winning_trade_creates_three_postings(self):
+        """Gewinn: 3 Buchungen (Verrechnung, Anteil A 60, Anteil B 40)."""
         cfg = _cfg()
         cash = CashLedger([], [], [])
         rts = [_rt(100.0)]
         postings = build_journal(rts, cash, cfg)
-        assert len(postings) == 4
-        # Gesamtsumme der Buchungen: Brutto + 2*Anteil + Fee = 100 + 50 + 50 + 10 = 210
-        assert sum(p.amount_eur for p in postings) == pytest.approx(210.0)
+        assert len(postings) == 3
+        # Brutto + 60 + 40 = 200
+        assert sum(p.amount_eur for p in postings) == pytest.approx(200.0)
 
     def test_losing_trade_creates_three_postings(self):
-        """Verlust: nur 3 Buchungen, keine Fee."""
+        """Verlust: 3 Buchungen, ebenfalls 60:40."""
         cfg = _cfg()
         rts = [_rt(-50.0)]
         postings = build_journal(rts, CashLedger([], [], []), cfg)
         assert len(postings) == 3
         sources = {p.source for p in postings}
         assert "performance_fee" not in sources
+        # |Verlust|=50 + Anteil A 30 + Anteil B 20 = 100
+        assert sum(p.amount_eur for p in postings) == pytest.approx(100.0)
 
     def test_journal_balance_via_account_totals(self):
         """Sum(Debits) je Konto - Sum(Credits) je Konto: globale Summe muss 0 sein."""
@@ -368,27 +377,27 @@ class TestJournal:
 
 
 class TestTaxReport:
-    def test_capital_income_50_50(self):
-        """Kapitaleinkuenfte werden 50:50 aufgeteilt, unabhaengig von Fee."""
+    def test_capital_income_60_40(self):
+        """Kapitaleinkuenfte 60:40 zugunsten Operator (symmetrisch)."""
         cfg = _cfg()
         rts = [_rt(100.0), _rt(-30.0)]
         lines = tax_report(rts, cfg, expenses_total=0.0, year=2025)
         a = next(ln for ln in lines if ln.holder_id == "A")
         b = next(ln for ln in lines if ln.holder_id == "B")
-        # Net pnl = 70, Kapitaleinkommen 50:50: 35 / 35
-        assert a.capital_income == pytest.approx(35.0)
-        assert b.capital_income == pytest.approx(35.0)
+        # Netto pnl = 70, A bekommt 60% = 42, B bekommt 40% = 28
+        assert a.capital_income == pytest.approx(42.0)
+        assert b.capital_income == pytest.approx(28.0)
+        assert (a.capital_income + b.capital_income) == pytest.approx(70.0)
 
-    def test_self_employment_only_for_operator(self):
-        """Honorar steht nur beim Operator."""
+    def test_loss_split_symmetric(self):
+        """Bei Verlust traegt Operator ebenfalls 60% — keine Schonung."""
         cfg = _cfg()
-        rts = [_rt(100.0), _rt(-50.0)]
+        rts = [_rt(-100.0)]
         lines = tax_report(rts, cfg, expenses_total=0.0, year=2025)
         a = next(ln for ln in lines if ln.holder_id == "A")
         b = next(ln for ln in lines if ln.holder_id == "B")
-        # Honorar nur fuer +100, nicht fuer -50: 10€
-        assert a.self_employment == pytest.approx(10.0)
-        assert b.self_employment == 0.0
+        assert a.capital_income == pytest.approx(-60.0)
+        assert b.capital_income == pytest.approx(-40.0)
 
     def test_year_filter(self):
         cfg = _cfg()
@@ -398,9 +407,8 @@ class TestTaxReport:
         ]
         lines_2025 = tax_report(rts, cfg, expenses_total=0.0, year=2025)
         a = next(ln for ln in lines_2025 if ln.holder_id == "A")
-        # Nur 2025: Kapitaleinkunft 100 (50% von 200), Honorar 20
-        assert a.capital_income == pytest.approx(100.0)
-        assert a.self_employment == pytest.approx(20.0)
+        # Nur 2025: 60% von 200 = 120
+        assert a.capital_income == pytest.approx(120.0)
 
 
 # ─────────────────────────────────────────

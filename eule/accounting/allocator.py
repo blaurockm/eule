@@ -1,12 +1,18 @@
-"""Verteilungsregeln fuer GbR-Buchhaltung.
+"""Verteilungsregeln fuer GbR-Buchhaltung — symmetrisch.
 
-Asymmetrie:
-- Trading-Gewinn: 50:50 Kapitaleinkunft + Performance-Fee an Operator (= 60:40 wenn Fee=10%)
-- Trading-Verlust: 50:50 (keine Fee)
-- Externe Kosten: 50:50 (genauer: nach capital_share)
+Trade-PnL wird mit asymmetrischem Schluessel verteilt, sowohl bei Gewinn als
+auch bei Verlust. Mit ``capital_share = 0.5`` und ``operator_premium_pct = 0.10``:
 
-Die Logik arbeitet pro einzelnem Roundtrip — bei einem Mix aus Gewinnen und
-Verlusten loesen nur die Gewinn-Roundtrips eine Verguetung aus.
+    Operator bekommt:  capital_share * pnl + premium * pnl  = 0.6 * pnl
+    Other    bekommt:  capital_share * pnl - premium * pnl  = 0.4 * pnl
+
+D.h. Gewinne 60:40 zugunsten Operator, Verluste 60:40 zulasten Operator. Damit
+ist das ``performance_fee.pct``-Feld konzeptionell kein Honorar mehr, sondern
+eine **Beteiligungs-Asymmetrie** der Trading-GbR. Steuerlich: gemeinsamer
+Verteilungsschluessel der Mitunternehmerschaft, alles Kapitaleinkuenfte
+(§20 EStG).
+
+Externe Kosten werden weiterhin nach reinem ``capital_share`` aufgeteilt.
 """
 
 from dataclasses import dataclass
@@ -16,20 +22,25 @@ from eule.accounting.config import AccountingConfig
 
 @dataclass(frozen=True)
 class PnLAllocation:
-    """Aufteilung eines Roundtrip-PnLs auf die Holder."""
+    """Aufteilung eines Roundtrip-PnLs auf die Holder.
 
-    operator_share: float        # was der Operator effektiv bekommt (Kapital + ggf. Fee)
-    other_share: float           # was der zweite Holder bekommt
-    performance_fee: float       # Anteil davon, der Honorar (kein Kapitaleinkommen) ist
-    capital_share_operator: float  # Kapitaleinkunfts-Anteil Operator (fuer Steuer)
-    capital_share_other: float     # Kapitaleinkunfts-Anteil andere (fuer Steuer)
+    operator_share == capital_share_operator (sind in der symmetrischen Logik
+    identisch — alles ist Kapitaleinkunft). Der Bonus (= ``performance_fee``)
+    ist nur informativ, falls man ihn separat ausweisen will.
+    """
+
+    operator_share: float
+    other_share: float
+    performance_fee: float          # Bonus fuer Operator (kann negativ sein bei Verlust)
+    capital_share_operator: float   # = operator_share
+    capital_share_other: float      # = other_share
 
 
 def allocate_pnl(pnl: float, cfg: AccountingConfig) -> PnLAllocation:
-    """Verteilt den Netto-PnL eines einzelnen Roundtrips.
+    """Verteilt den Netto-PnL eines Roundtrips symmetrisch.
 
-    Bei pnl > 0: Performance-Fee wird zusaetzlich vom anderen Holder an Operator transferiert.
-    Bei pnl <= 0: Reine Aufteilung nach capital_share, keine Fee.
+    Bei pnl > 0: Operator bekommt mehr (capital_share + premium).
+    Bei pnl < 0: Operator traegt mehr (capital_share - |premium|, also negativer Bonus).
     """
     operator_id = cfg.operator
     other_id = next(h.id for h in cfg.holders if h.id != operator_id)
@@ -38,23 +49,17 @@ def allocate_pnl(pnl: float, cfg: AccountingConfig) -> PnLAllocation:
 
     cap_op = pnl * op_share
     cap_ot = pnl * ot_share
+    bonus = pnl * cfg.performance_fee.pct
 
-    if pnl > 0:
-        fee = pnl * cfg.performance_fee.pct
-        return PnLAllocation(
-            operator_share=cap_op + fee,
-            other_share=cap_ot - fee,
-            performance_fee=fee,
-            capital_share_operator=cap_op,
-            capital_share_other=cap_ot,
-        )
+    op_total = cap_op + bonus
+    ot_total = cap_ot - bonus
 
     return PnLAllocation(
-        operator_share=cap_op,
-        other_share=cap_ot,
-        performance_fee=0.0,
-        capital_share_operator=cap_op,
-        capital_share_other=cap_ot,
+        operator_share=op_total,
+        other_share=ot_total,
+        performance_fee=bonus,
+        capital_share_operator=op_total,
+        capital_share_other=ot_total,
     )
 
 

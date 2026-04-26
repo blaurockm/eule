@@ -78,11 +78,11 @@ DB-Zugang über Umgebungsvariablen (in `~/eule/.env` auf systematic):
 
 Modul `eule.accounting` fuer den Joint-Account hinter `EULE_DB_REAL2_IBKR`.
 
-**Verteilungsregeln** (asymmetrisch):
-- Trading-Gewinne: 50:50 Kapitaleinkunft + 10% Taetigkeitsverguetung an Operator (= 60:40 wirtschaftlich)
-- Trading-Verluste: 50:50 (keine Verguetung)
-- Externe Kosten: 50:50
+**Verteilungsregeln** (symmetrisch, GbR-Mitunternehmerschaft):
+- Trading-Gewinne und -Verluste: 60:40 zugunsten/zulasten Operator
+- Externe Kosten: 50:50 nach capital_share
 - Zinsen/Dividenden: nicht erfasst (User-Entscheidung)
+- Steuerlich: alles Kapitaleinkuenfte (§20 EStG, Anlage KAP) — kein Honorar
 
 **Datenquellen** (alle in `~/Dokumente/obsidian/tradingGbr/`, Override via `EULE_TRADINGGBR_DIR`):
 - `config.yaml` — Holders, Operator, Verguetungsregel, Pfad zur balances.json
@@ -119,7 +119,7 @@ Beispiel-Templates: `eule/accounting/examples/*.yaml`.
 
 **Vercel-App** (`web/`): vanilla HTML+JS, kein Build. Vercel-Project auf das Repo zeigen, Root Directory = `web/`. Workflow: `eule accounting refresh && git push`.
 
-**Steuerlicher Hinweis**: 60:40 als Verteilung von Kapitaleinkuenften ist im DE-Steuerrecht ungewoehnlich. Saubere Modellierung: 50:50 ans Finanzamt + Honorar (§18 EStG) fuer den Operator. Hat Doppelbesteuerung zur Folge (§20 Abs. 9 EStG, kein Werbungskostenabzug). Vor Live-Gang mit Steuerberater abstimmen.
+**Steuerlicher Hinweis**: 60:40 als symmetrischer Verteilungsschluessel der Trading-GbR ist sauber modellierbar als Mitunternehmerschaft (alles §20 Anlage KAP). Muss aber im Gesellschaftsvertrag dokumentiert sein, sonst kann das Finanzamt den Schluessel auf 50:50 zurueckrechnen. Vor Live-Gang mit Steuerberater abstimmen. Details in `eule/accounting/README.md`.
 
 ### Offen (Phase 2: Trade Journal)
 
