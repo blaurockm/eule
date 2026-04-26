@@ -1,20 +1,20 @@
 """Import von IBKR Flex-Query-CSV-Dateien als manuelle Trades.
 
-Der Flex-Query muss folgende Felder enthalten (Trade-Section):
+Pflichtfelder im Flex-Query (Trade-Section):
     UnderlyingSymbol, Symbol, TradeDate, NetCash, IBCommission,
-    IBCommissionCurrency, Conid, UnderlyingConid, TradeID
+    IBCommissionCurrency, TradeID
+Optional aber empfohlen:
+    Conid, UnderlyingConid, IBExecID
 
-Optional in derselben Datei: ConversionRate-Section (4 Spalten:
-ReportDate, FromCurrency, ToCurrency, Rate). Wenn vorhanden, wird damit
-NetCash in EUR umgerechnet. Trades in Fremdwaehrungen ohne FX-Eintrag
-werden als Fehler gemeldet.
+Plus ConversionRate-Section: Date/Time (oder ReportDate), FromCurrency,
+ToCurrency, Rate.
 
-Mehrere Dateien werden zusammengefuehrt, dedupliziert ueber TradeID.
-Trades, deren TradeID in der Hase-DB als trade_ref existiert, werden
-ausgeschlossen (DB ist authoritativ fuer diese).
+Mehrere Dateien werden zusammengefuehrt, Trades dedupliziert ueber TradeID.
+Trades, deren TradeID ODER IBExecID in der Hase-DB als trade_ref existiert,
+werden ausgeschlossen (DB ist authoritativ fuer diese).
 
-Ergebnis: pro (UnderlyingSymbol, Symbol, TradeDate)-Gruppe ein Eintrag
-fuer manual_trades.yaml mit aufsummiertem PnL in EUR.
+Ergebnis: pro (Symbol, TradeDate)-Gruppe ein Eintrag fuer manual_trades.yaml
+mit aufsummiertem PnL in EUR.
 """
 
 import csv
@@ -27,11 +27,12 @@ from pathlib import Path
 @dataclass(frozen=True)
 class FlexTrade:
     trade_id: str
+    ibexec_id: str           # leer wenn Spalte fehlt
     trade_date: date
     underlying: str
     symbol: str
     net_cash: float          # Original-Waehrung
-    commission: float        # Original-Waehrung (negativ = bezahlt)
+    commission: float        # Original-Waehrung
     currency: str
     conid: str
     underlying_conid: str
@@ -42,7 +43,7 @@ class FxRate:
     report_date: date
     from_ccy: str
     to_ccy: str
-    rate: float              # 1 from_ccy = rate * to_ccy
+    rate: float
 
 
 @dataclass(frozen=True)
@@ -55,53 +56,87 @@ class AggregatedTrade:
     trade_ids: tuple[str, ...]
 
 
+# ──────────────────────────────────────────
+# Header-Detection
+# ──────────────────────────────────────────
+
+
+_TRADE_REQUIRED = {"TradeDate", "Symbol", "NetCash", "IBCommission"}
+_FX_REQUIRED = {"FromCurrency", "ToCurrency", "Rate"}
+
+
+def _is_trade_header(row: list[str]) -> bool:
+    return _TRADE_REQUIRED.issubset(set(row))
+
+
+def _is_fx_header(row: list[str]) -> bool:
+    return _FX_REQUIRED.issubset(set(row))
+
+
 def _parse_date_yyyymmdd(s: str) -> date:
+    s = s.strip()
     return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
 
 
+# ──────────────────────────────────────────
+# CSV-Parsing
+# ──────────────────────────────────────────
+
+
 def parse_flex_csv(path: Path) -> tuple[list[FlexTrade], list[FxRate]]:
-    """Liest eine Flex-CSV. Erkennt Trade-Zeilen (9 Spalten) und FX-Zeilen (4 Spalten)
-    am Spaltenanzahl. Header-Zeilen werden uebersprungen.
-    """
+    """Liest eine Flex-CSV. Erkennt Sections ueber Header-Zeilen."""
     trades: list[FlexTrade] = []
     fx: list[FxRate] = []
+    current = None
+    cols: dict[str, int] = {}
+
+    def col(row: list[str], name: str, default: str = "") -> str:
+        if name not in cols:
+            return default
+        idx = cols[name]
+        return row[idx] if idx < len(row) else default
 
     with open(path) as f:
         reader = csv.reader(f)
         for row in reader:
             if not row:
                 continue
-            if len(row) == 9:
-                # Header-Zeile erkennen
-                if row[0] == "UnderlyingSymbol" or row[2] == "TradeDate":
-                    continue
+            if _is_trade_header(row):
+                current = "trade"
+                cols = {name: i for i, name in enumerate(row)}
+                continue
+            if _is_fx_header(row):
+                current = "fx"
+                cols = {name: i for i, name in enumerate(row)}
+                continue
+
+            if current == "trade":
                 try:
                     trades.append(
                         FlexTrade(
-                            trade_id=row[8],
-                            trade_date=_parse_date_yyyymmdd(row[2]),
-                            underlying=row[0],
-                            symbol=row[1],
-                            net_cash=float(row[3]),
-                            commission=float(row[4]),
-                            currency=row[5],
-                            conid=row[6],
-                            underlying_conid=row[7],
+                            trade_id=col(row, "TradeID"),
+                            ibexec_id=col(row, "IBExecID"),
+                            trade_date=_parse_date_yyyymmdd(col(row, "TradeDate")),
+                            underlying=col(row, "UnderlyingSymbol"),
+                            symbol=col(row, "Symbol"),
+                            net_cash=float(col(row, "NetCash") or 0),
+                            commission=float(col(row, "IBCommission") or 0),
+                            currency=col(row, "IBCommissionCurrency"),
+                            conid=col(row, "Conid"),
+                            underlying_conid=col(row, "UnderlyingConid"),
                         )
                     )
                 except (ValueError, IndexError):
                     continue
-            elif len(row) == 4:
-                # Header oder FX-Zeile
-                if row[0] == "ReportDate" or row[1] == "FromCurrency":
-                    continue
+            elif current == "fx":
+                date_col = "Date/Time" if "Date/Time" in cols else "ReportDate"
                 try:
                     fx.append(
                         FxRate(
-                            report_date=_parse_date_yyyymmdd(row[0]),
-                            from_ccy=row[1],
-                            to_ccy=row[2],
-                            rate=float(row[3]),
+                            report_date=_parse_date_yyyymmdd(col(row, date_col)),
+                            from_ccy=col(row, "FromCurrency"),
+                            to_ccy=col(row, "ToCurrency"),
+                            rate=float(col(row, "Rate") or 0),
                         )
                     )
                 except (ValueError, IndexError):
@@ -120,12 +155,12 @@ def parse_flex_files(paths: list[Path]) -> tuple[list[FlexTrade], dict[tuple[dat
     for p in paths:
         trades, fx = parse_flex_csv(p)
         for t in trades:
-            all_trades.setdefault(t.trade_id, t)  # erste Datei gewinnt bei Duplikat
+            if t.trade_id and t.trade_id not in all_trades:
+                all_trades[t.trade_id] = t
         for r in fx:
             if r.to_ccy != "EUR":
                 continue
-            key = (r.report_date, r.from_ccy)
-            fx_lookup[key] = r.rate
+            fx_lookup[(r.report_date, r.from_ccy)] = r.rate
 
     return list(all_trades.values()), fx_lookup
 
@@ -134,7 +169,7 @@ def to_eur(
     trade: FlexTrade,
     fx_lookup: dict[tuple[date, str], float],
 ) -> float | None:
-    """Konvertiert NetCash in EUR. Gibt None zurueck wenn FX-Rate fehlt."""
+    """Konvertiert NetCash in EUR. None wenn FX-Rate fehlt."""
     if trade.currency == "EUR":
         return trade.net_cash
     rate = fx_lookup.get((trade.trade_date, trade.currency))
@@ -143,15 +178,22 @@ def to_eur(
     return trade.net_cash * rate
 
 
+# ──────────────────────────────────────────
+# Aggregation
+# ──────────────────────────────────────────
+
+
 def aggregate(
     trades: list[FlexTrade],
     fx_lookup: dict[tuple[date, str], float],
     skip_trade_ids: set[str],
 ) -> tuple[list[AggregatedTrade], list[FlexTrade], list[FlexTrade]]:
-    """Aggregiert pro (Symbol, Datum). Gibt zurueck:
-    - aggregierte Trades (importierbar)
-    - skipped (in Hase-DB)
-    - fx_missing (Currency-Konversion fehlgeschlagen)
+    """Aggregiert pro (Symbol, Datum). skip_trade_ids matcht gegen TradeID
+    UND IBExecID (d.h. trade_refs aus der Hase-DB koennen entweder TradeID
+    oder ExecID sein — wir testen beides).
+
+    Returns:
+        (importierbare Eintraege, skipped, fx_missing)
     """
     skipped: list[FlexTrade] = []
     fx_missing: list[FlexTrade] = []
@@ -161,7 +203,7 @@ def aggregate(
         # FX-Konversionen (kein Underlying, Symbol wie EUR.USD) raus
         if not t.underlying or t.symbol == "" or "." in t.underlying:
             continue
-        if t.trade_id in skip_trade_ids:
+        if t.trade_id in skip_trade_ids or (t.ibexec_id and t.ibexec_id in skip_trade_ids):
             skipped.append(t)
             continue
         eur = to_eur(t, fx_lookup)
@@ -188,6 +230,11 @@ def aggregate(
     return aggregated, skipped, fx_missing
 
 
+# ──────────────────────────────────────────
+# YAML-Output
+# ──────────────────────────────────────────
+
+
 def render_yaml(
     aggregated: list[AggregatedTrade],
     *,
@@ -201,7 +248,6 @@ def render_yaml(
         lines.append("")
     lines.append("manual_trades:")
     for a in aggregated:
-        # Note enthaelt Underlying + TradeIDs fuer Nachvollziehbarkeit
         ids = ",".join(a.trade_ids)
         note = f"{a.underlying} | tid={ids}"
         lines.append(
@@ -214,8 +260,7 @@ def render_yaml(
 
 
 def _yaml_str(s: str) -> str:
-    """Quoting fuer YAML-Strings, die Sonderzeichen enthalten koennten."""
+    """Quoting fuer YAML-Strings mit Sonderzeichen."""
     if any(c in s for c in ",:#"):
-        # einfache Quotes, ggf. doppelt vorhandene escapen
         return "'" + s.replace("'", "''") + "'"
     return s

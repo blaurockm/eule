@@ -45,7 +45,11 @@ def _load_cfg() -> AccountingConfig:
 
 
 def _hase_trade_refs(cfg: AccountingConfig) -> set[str]:
-    """Liest alle nicht-NULL trade_ref-Werte aus der Hase-DB fuer das Environment."""
+    """Liest alle nicht-NULL trade_ref-Werte aus der Hase-DB fuer das Environment.
+    Leeres Set wenn use_hase_db=false.
+    """
+    if not cfg.use_hase_db:
+        return set()
     conn, runtime = get_env_info(cfg.env)
     try:
         trades = load_trades(conn, runtime)
@@ -57,15 +61,21 @@ def _hase_trade_refs(cfg: AccountingConfig) -> set[str]:
 def _load_roundtrips(cfg: AccountingConfig) -> tuple[list[Roundtrip], int, int]:
     """Laedt Hase-Roundtrips + manuelle Trades fuer das Environment.
 
+    Wenn cfg.use_hase_db=false, wird die Hase-DB nicht abgefragt — manual_trades.yaml
+    ist dann die einzige Trade-Quelle.
+
     Returns:
         (combined_roundtrips, db_count, manual_count)
     """
-    conn, runtime = get_env_info(cfg.env)
-    try:
-        trades = load_trades(conn, runtime)
-    finally:
-        conn.close()
-    db_rts = detect_roundtrips(trades)
+    if cfg.use_hase_db:
+        conn, runtime = get_env_info(cfg.env)
+        try:
+            trades = load_trades(conn, runtime)
+        finally:
+            conn.close()
+        db_rts = detect_roundtrips(trades)
+    else:
+        db_rts = []
     manual_rts = load_manual_trades()
     combined = db_rts + manual_rts
     combined.sort(key=lambda r: r.exit_ts)

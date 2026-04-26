@@ -46,6 +46,7 @@ class AccountingConfig:
     performance_fee: PerformanceFee
     fiscal_year_start: str                # "01-01"
     balances_json_path: str               # Ziel-Pfad fuer Vercel-App-JSON
+    use_hase_db: bool = True              # False = nur manual_trades.yaml als Trade-Quelle
 
     def holder(self, holder_id: str) -> HolderDef:
         for h in self.holders:
@@ -73,6 +74,7 @@ def load_accounting_config(path: Path | None = None) -> AccountingConfig:
         account = raw["account"]
         env = account["env"]
         base_currency = account.get("base_currency", "EUR")
+        use_hase_db = bool(account.get("use_hase_db", True))
 
         holders = [
             HolderDef(id=h["id"], name=h["name"], capital_share=float(h["capital_share"]))
@@ -101,6 +103,7 @@ def load_accounting_config(path: Path | None = None) -> AccountingConfig:
         performance_fee=fee,
         fiscal_year_start=fiscal_year_start,
         balances_json_path=balances_json,
+        use_hase_db=use_hase_db,
     )
 
     _validate(cfg)

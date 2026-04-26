@@ -31,7 +31,7 @@ from eule.accounting.tax import tax_report
 from eule.models import Roundtrip
 
 
-def _cfg(fee_pct: float = 0.10) -> AccountingConfig:
+def _cfg(fee_pct: float = 0.10, use_hase_db: bool = True) -> AccountingConfig:
     return AccountingConfig(
         env="real2-ibkr",
         base_currency="EUR",
@@ -47,6 +47,7 @@ def _cfg(fee_pct: float = 0.10) -> AccountingConfig:
         ),
         fiscal_year_start="01-01",
         balances_json_path="balances.json",
+        use_hase_db=use_hase_db,
     )
 
 
@@ -369,16 +370,23 @@ class TestFlexImporter:
         p.write_text(content)
         return p
 
+    HEADER = (
+        '"UnderlyingSymbol","Symbol","TradeDate","NetCash","IBCommission",'
+        '"IBCommissionCurrency","Conid","UnderlyingConid","TradeID","IBExecID"\n'
+    )
+    FX_HEADER = '"Date/Time","FromCurrency","ToCurrency","Rate"\n'
+
     def test_parses_trade_and_fx_rows(self, tmp_path):
         path = self._csv(tmp_path, (
-            '"UnderlyingSymbol","Symbol","TradeDate","NetCash","IBCommission","IBCommissionCurrency","Conid","UnderlyingConid","TradeID"\n'
-            '"TLT","TLT","20250715","100","-1","USD","12345","12345","tid-1"\n'
-            '"ReportDate","FromCurrency","ToCurrency","Rate"\n'
-            '"20250715","USD","EUR","0.92"\n'
+            self.HEADER
+            + '"TLT","TLT","20250715","100","-1","USD","12345","12345","tid-1","exec-1"\n'
+            + self.FX_HEADER
+            + '"20250715","USD","EUR","0.92"\n'
         ))
         trades, fx = parse_flex_csv(path)
         assert len(trades) == 1
         assert trades[0].trade_id == "tid-1"
+        assert trades[0].ibexec_id == "exec-1"
         assert trades[0].net_cash == 100.0
         assert trades[0].currency == "USD"
         assert len(fx) == 1
@@ -386,8 +394,10 @@ class TestFlexImporter:
 
     def test_eur_conversion(self, tmp_path):
         path = self._csv(tmp_path, (
-            '"TLT","TLT","20250715","100","-1","USD","12345","12345","tid-1"\n'
-            '"20250715","USD","EUR","0.92"\n'
+            self.HEADER
+            + '"TLT","TLT","20250715","100","-1","USD","12345","12345","tid-1","exec-1"\n'
+            + self.FX_HEADER
+            + '"20250715","USD","EUR","0.92"\n'
         ))
         trades, fx_lookup = parse_flex_files([path])
         eur = to_eur(trades[0], fx_lookup)
@@ -395,7 +405,8 @@ class TestFlexImporter:
 
     def test_eur_passthrough(self, tmp_path):
         path = self._csv(tmp_path, (
-            '"ESTX50","ESTX50","20250715","50","-1","EUR","12345","12345","tid-1"\n'
+            self.HEADER
+            + '"ESTX50","ESTX50","20250715","50","-1","EUR","12345","12345","tid-1","exec-1"\n'
         ))
         trades, fx_lookup = parse_flex_files([path])
         eur = to_eur(trades[0], fx_lookup)
@@ -405,51 +416,70 @@ class TestFlexImporter:
         f1 = tmp_path / "a.csv"
         f2 = tmp_path / "b.csv"
         f1.write_text(
-            '"TLT","TLT","20250715","100","-1","USD","1","1","tid-1"\n'
-            '"20250715","USD","EUR","0.92"\n'
+            self.HEADER
+            + '"TLT","TLT","20250715","100","-1","USD","1","1","tid-1","exec-1"\n'
+            + self.FX_HEADER
+            + '"20250715","USD","EUR","0.92"\n'
         )
         f2.write_text(
-            '"TLT","TLT","20250715","100","-1","USD","1","1","tid-1"\n'  # selbe TradeID
-            '"TLT","TLT","20250716","50","-1","USD","1","1","tid-2"\n'   # neu
-            '"20250716","USD","EUR","0.93"\n'
+            self.HEADER
+            + '"TLT","TLT","20250715","100","-1","USD","1","1","tid-1","exec-1"\n'
+            + '"TLT","TLT","20250716","50","-1","USD","1","1","tid-2","exec-2"\n'
+            + self.FX_HEADER
+            + '"20250716","USD","EUR","0.93"\n'
         )
         trades, fx_lookup = parse_flex_files([f1, f2])
-        assert len(trades) == 2  # Dedup ueber TradeID
+        assert len(trades) == 2
         ids = {t.trade_id for t in trades}
         assert ids == {"tid-1", "tid-2"}
 
     def test_aggregate_per_symbol_and_date(self, tmp_path):
         path = self._csv(tmp_path, (
-            '"MNQ","MNQU5","20250715","235.5","-2.5","USD","1","1","tid-1"\n'
-            '"MNQ","MNQU5","20250715","-254.5","-2.5","USD","1","1","tid-2"\n'
-            '"MNQ","MNQU5","20250715","257.5","-2.5","USD","1","1","tid-3"\n'
-            '"20250715","USD","EUR","0.90"\n'
+            self.HEADER
+            + '"MNQ","MNQU5","20250715","235.5","-2.5","USD","1","1","tid-1","exec-1"\n'
+            + '"MNQ","MNQU5","20250715","-254.5","-2.5","USD","1","1","tid-2","exec-2"\n'
+            + '"MNQ","MNQU5","20250715","257.5","-2.5","USD","1","1","tid-3","exec-3"\n'
+            + self.FX_HEADER
+            + '"20250715","USD","EUR","0.90"\n'
         ))
         trades, fx_lookup = parse_flex_files([path])
         agg, skipped, fx_missing = aggregate(trades, fx_lookup, set())
         assert len(agg) == 1
-        # Sum: 235.5 - 254.5 + 257.5 = 238.5 USD * 0.90 = 214.65 EUR
         assert agg[0].pnl_eur == pytest.approx(214.65, abs=0.01)
         assert agg[0].symbol == "MNQU5"
         assert len(agg[0].trade_ids) == 3
 
-    def test_skip_known_db_trades(self, tmp_path):
+    def test_skip_by_tradeid(self, tmp_path):
         path = self._csv(tmp_path, (
-            '"TLT","TLT","20250715","100","-1","EUR","1","1","known"\n'
-            '"TLT","TLT","20250716","200","-1","EUR","1","1","new"\n'
+            self.HEADER
+            + '"TLT","TLT","20250715","100","-1","EUR","1","1","known","exec-a"\n'
+            + '"TLT","TLT","20250716","200","-1","EUR","1","1","new","exec-b"\n'
         ))
         trades, fx_lookup = parse_flex_files([path])
         agg, skipped, _ = aggregate(trades, fx_lookup, skip_trade_ids={"known"})
         assert len(agg) == 1
         assert agg[0].pnl_eur == pytest.approx(200.0)
         assert len(skipped) == 1
-        assert skipped[0].trade_id == "known"
+
+    def test_skip_by_ibexec_id(self, tmp_path):
+        """skip_trade_ids matcht gegen TradeID UND IBExecID — die Hase-DB
+        koennte einen ExecID statt TradeID gespeichert haben."""
+        path = self._csv(tmp_path, (
+            self.HEADER
+            + '"TLT","TLT","20250715","100","-1","EUR","1","1","tid-1","exec-known"\n'
+            + '"TLT","TLT","20250716","200","-1","EUR","1","1","tid-2","exec-new"\n'
+        ))
+        trades, fx_lookup = parse_flex_files([path])
+        agg, skipped, _ = aggregate(trades, fx_lookup, skip_trade_ids={"exec-known"})
+        assert len(agg) == 1
+        assert agg[0].pnl_eur == pytest.approx(200.0)
+        assert len(skipped) == 1
 
     def test_fx_conversion_trades_filtered(self, tmp_path):
-        """Symbole wie EUR.USD (FX-Conversion) sind keine Trades."""
         path = self._csv(tmp_path, (
-            '"","EUR.USD","20250430","0","-4.39","EUR","1","","tid-fx"\n'
-            '"TLT","TLT","20250430","100","-1","EUR","2","2","tid-real"\n'
+            self.HEADER
+            + '"","EUR.USD","20250430","0","-4.39","EUR","1","","tid-fx","exec-fx"\n'
+            + '"TLT","TLT","20250430","100","-1","EUR","2","2","tid-real","exec-real"\n'
         ))
         trades, fx_lookup = parse_flex_files([path])
         agg, _, _ = aggregate(trades, fx_lookup, set())
@@ -458,8 +488,8 @@ class TestFlexImporter:
 
     def test_fx_missing_reported(self, tmp_path):
         path = self._csv(tmp_path, (
-            '"TLT","TLT","20250715","100","-1","USD","1","1","tid-1"\n'
-            # keine FX-Zeile → fx_missing
+            self.HEADER
+            + '"TLT","TLT","20250715","100","-1","USD","1","1","tid-1","exec-1"\n'
         ))
         trades, fx_lookup = parse_flex_files([path])
         agg, _, fx_missing = aggregate(trades, fx_lookup, set())
