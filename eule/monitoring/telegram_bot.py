@@ -408,11 +408,14 @@ def _telegram_html_to_email(text: str, title: str) -> str:
 # --- Precheck Execution ---
 
 
-def run_precheck() -> tuple[int, str]:
+def run_precheck(force_summary: bool = False) -> tuple[int, str]:
     """Run precheck.py and return (exit_code, output)."""
+    cmd = ["python", str(PRECHECK_SCRIPT)]
+    if force_summary:
+        cmd.append("--summary")
     try:
         result = subprocess.run(
-            ["python", str(PRECHECK_SCRIPT)],
+            cmd,
             capture_output=True,
             text=True,
             timeout=30,
