@@ -31,33 +31,34 @@
       </header>
 
       <section class="hero">
-        <p class="hero-label">Saldo Broker-Konto</p>
+        <p class="hero-label">Broker-Konto gesamt</p>
         <p class="hero-amount">
-          <span id="balance-amount"></span>
+          <span id="broker-total"></span>
           <span class="hero-currency" id="currency"></span>
-        </p>
-        <p class="hero-sub hidden" id="giro-line">
-          Reserve auf Giro: <span id="giro-amount"></span>
         </p>
       </section>
 
       <section class="breakdown">
         <div class="row">
-          <span class="row-label">Kapital (Einlagen − Entnahmen)</span>
-          <span class="row-value" id="capital"></span>
+          <span class="row-label">Gewinn gesamt <span class="row-meta" id="cagr-meta"></span></span>
+          <span class="row-value" id="total-pnl"></span>
         </div>
         <div class="row">
-          <span class="row-label">Anteil Trading-PnL</span>
-          <span class="row-value" id="pnl"></span>
+          <span class="row-label">Dein Anteil <span class="row-meta" id="pnl-share-pct"></span></span>
+          <span class="row-value" id="pnl-share"></span>
+        </div>
+        <div class="row row-divider">
+          <span class="row-label">Kosten gesamt</span>
+          <span class="row-value" id="total-expenses"></span>
         </div>
         <div class="row">
-          <span class="row-label">Anteil externe Kosten</span>
-          <span class="row-value" id="expenses"></span>
+          <span class="row-label">Dein Anteil <span class="row-meta" id="expenses-share-pct"></span></span>
+          <span class="row-value" id="expenses-share"></span>
         </div>
       </section>
 
       <section class="trades">
-        <p class="section-label">Letzte 3 Trades</p>
+        <p class="section-label">Letzte 3 Handelstage</p>
         <ul class="trade-list" id="recent-trades"></ul>
       </section>
 

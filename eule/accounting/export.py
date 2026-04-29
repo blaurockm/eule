@@ -2,11 +2,12 @@
 
 import csv
 import json
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import yaml
 
+from eule.accounting.cash import CashLedger
 from eule.accounting.config import AccountingConfig, AccountingConfigError, tradinggbr_dir
 from eule.accounting.models import AccountBalance, HolderBalance, Posting
 from eule.accounting.tax import TaxLine
@@ -36,22 +37,64 @@ def load_tokens(path: Path | None = None) -> dict[str, str]:
     return out
 
 
-def _display_symbol(symbol: str) -> str:
-    """Schneidet Note-Anhang aus dem Symbol ab (manual_trades fuegt '(note)' an)."""
-    return symbol.split(" (")[0]
-
-
 def _recent_trades(roundtrips, limit: int = 3) -> list[dict]:
-    """Liefert die letzten N Roundtrips (chronologisch nach exit_date) als Dict-Liste."""
-    sorted_rts = sorted(roundtrips, key=lambda r: r.exit_ts, reverse=True)[:limit]
+    """Aggregiert Roundtrips pro exit_date und gibt die letzten N Handelstage zurueck."""
+    by_date: dict = {}
+    for r in roundtrips:
+        by_date.setdefault(r.exit_date, []).append(r)
     return [
         {
-            "date": r.exit_date.isoformat(),
-            "symbol": _display_symbol(r.symbol),
-            "pnl_eur": round(r.pnl, 2),
+            "date": d.isoformat(),
+            "count": len(by_date[d]),
+            "pnl_eur": round(sum(r.pnl for r in by_date[d]), 2),
         }
-        for r in sorted_rts
+        for d in sorted(by_date.keys(), reverse=True)[:limit]
     ]
+
+
+def _pnl_share_pct(holder_id: str, cfg: AccountingConfig) -> float:
+    """Anteil des Holders am Trading-PnL (z.B. 0.6 fuer Operator, 0.4 fuer Other)."""
+    base = cfg.holder(holder_id).capital_share
+    sign = 1 if holder_id == cfg.operator else -1
+    return base + sign * cfg.performance_fee.pct
+
+
+def _global_metrics(
+    roundtrips,
+    cash: CashLedger,
+    balances: dict[str, HolderBalance],
+) -> dict:
+    """Aggregat-Sicht (gleich fuer alle Holder): Broker-Saldo, Brutto-PnL, Brutto-
+    Kosten und naive CAGR auf Basis erste-Einlage->aktuelle-Equity.
+
+    CAGR ist money-weighted-naiv (ignoriert wann spaetere Einlagen kamen). Fuer
+    eine korrekte Time-Weighted Return braeuchte man Daily-Snapshots; das ist
+    fuer dieses Frontend overkill.
+    """
+    broker_total = sum(b.balance_broker for b in balances.values())
+    giro_total = sum(b.balance_giro for b in balances.values())
+
+    total_pnl = sum(r.pnl for r in roundtrips)
+    total_expenses = sum(e.amount_eur for e in cash.expenses)
+    total_deposits = sum(d.amount_eur for d in cash.deposits)
+    total_withdrawals = sum(w.amount_eur for w in cash.withdrawals)
+
+    cagr: float | None = None
+    if cash.deposits and total_deposits > 0:
+        first_date = min(d.date for d in cash.deposits)
+        years = (date.today() - first_date).days / 365.25
+        equity_now = total_deposits - total_withdrawals + total_pnl - total_expenses
+        if years > 0 and equity_now > 0:
+            cagr = (equity_now / total_deposits) ** (1 / years) - 1
+
+    return {
+        "broker_total": round(broker_total, 2),
+        "giro_total": round(giro_total, 2),
+        "total_pnl": round(total_pnl, 2),
+        "total_expenses": round(total_expenses, 2),
+        "total_deposits": round(total_deposits, 2),
+        "cagr": round(cagr, 4) if cagr is not None else None,
+    }
 
 
 def write_balances_json(
@@ -59,13 +102,18 @@ def write_balances_json(
     cfg: AccountingConfig,
     target_path: Path,
     roundtrips=None,
+    cash: CashLedger | None = None,
 ) -> None:
     """Schreibt balances.json fuer die Vercel-App.
 
-    Pro Token: nur die Broker-Sicht des Holders + die letzten 3 Trades global.
+    Struktur:
+      global   — fuer alle Holder gleich (Broker-Gesamt, Brutto-PnL, CAGR, ...)
+      tokens   — pro Token: Holder-Anteil an PnL/Kosten (absolut + Prozent)
     """
     tokens = load_tokens()
     recent = _recent_trades(roundtrips or [])
+    cash = cash if cash is not None else CashLedger()
+    metrics = _global_metrics(roundtrips or [], cash, balances)
 
     def _r(v: float) -> float:
         # Vermeidet -0.0 in JSON-Output durch Round-trip-Mathematik
@@ -74,23 +122,26 @@ def write_balances_json(
 
     payload = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "global": {
+            **metrics,
+            "currency": cfg.base_currency,
+            "recent_trades": recent,
+        },
         "tokens": {},
     }
     for token, holder_id in tokens.items():
         if holder_id not in balances:
             continue
         b = balances[holder_id]
+        h = cfg.holder(holder_id)
         payload["tokens"][token] = {
             "holder_id": b.holder_id,
             "name": b.name,
-            "balance_broker": _r(b.balance_broker),
-            "balance_giro": _r(b.balance_giro),
-            "capital": _r(b.capital),
-            "allocated_pnl": _r(b.allocated_pnl),
-            "allocated_expenses": _r(b.allocated_expenses),
             "as_of": b.as_of.isoformat(),
-            "currency": cfg.base_currency,
-            "recent_trades": recent,
+            "pnl_share": _r(b.allocated_pnl),
+            "pnl_share_pct": round(_pnl_share_pct(holder_id, cfg), 4),
+            "expenses_share": _r(b.allocated_expenses),
+            "expenses_share_pct": round(h.capital_share, 4),
         }
 
     target_path = target_path.expanduser()

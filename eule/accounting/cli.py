@@ -98,7 +98,7 @@ def refresh_cmd(
         raise typer.Exit(1)
 
     target = _resolve_path(target_raw)
-    write_balances_json(balances, cfg, target, roundtrips=rts)
+    write_balances_json(balances, cfg, target, roundtrips=rts, cash=cash)
 
     if format == "json":
         output_json(

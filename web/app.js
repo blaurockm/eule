@@ -42,6 +42,12 @@
   const fmt = (n) =>
     n.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+  const fmtPct = (frac, digits = 1) =>
+    (frac * 100).toLocaleString("de-DE", {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    }) + " %";
+
   const setSigned = (id, value) => {
     const el = $(id);
     el.textContent = fmt(value);
@@ -50,26 +56,31 @@
     if (value < -0.005) el.classList.add("negative");
   };
 
+  const g = payload.global || {};
+  const currency = g.currency || "EUR";
+
   $("holder-name").textContent = entry.name;
-  $("balance-amount").textContent = fmt(entry.balance_broker);
-  $("currency").textContent = entry.currency || "EUR";
+  $("broker-total").textContent = fmt(g.broker_total ?? 0);
+  $("currency").textContent = currency;
 
-  // Giro-Reserve nur zeigen wenn != 0
-  if (Math.abs(entry.balance_giro) >= 0.01) {
-    $("giro-amount").textContent = fmt(entry.balance_giro) + " " + (entry.currency || "EUR");
-    $("giro-line").classList.remove("hidden");
-  }
+  setSigned("total-pnl", g.total_pnl ?? 0);
+  $("cagr-meta").textContent =
+    g.cagr === null || g.cagr === undefined ? "" : `(CAGR ${fmtPct(g.cagr)})`;
 
-  $("capital").textContent = fmt(entry.capital);
-  setSigned("pnl", entry.allocated_pnl);
-  $("expenses").textContent = fmt(entry.allocated_expenses);
+  setSigned("pnl-share", entry.pnl_share ?? 0);
+  $("pnl-share-pct").textContent = `(${fmtPct(entry.pnl_share_pct ?? 0, 0)})`;
+
+  $("total-expenses").textContent = fmt(g.total_expenses ?? 0);
+  $("expenses-share").textContent = fmt(entry.expenses_share ?? 0);
+  $("expenses-share-pct").textContent = `(${fmtPct(entry.expenses_share_pct ?? 0, 0)})`;
+
   $("as-of").textContent = entry.as_of;
   $("generated-at").textContent = (payload.generated_at || "").replace("T", " ").slice(0, 16);
 
-  // Recent trades
+  // Recent trades (global — gleich fuer alle Holder)
   const list = $("recent-trades");
   list.innerHTML = "";
-  const trades = entry.recent_trades || [];
+  const trades = g.recent_trades || [];
   if (trades.length === 0) {
     const li = document.createElement("li");
     li.className = "trade-empty";
@@ -79,9 +90,10 @@
     for (const t of trades) {
       const li = document.createElement("li");
       const sign = t.pnl_eur > 0 ? "positive" : t.pnl_eur < 0 ? "negative" : "";
+      const label = t.count === 1 ? "Roundtrip" : "Roundtrips";
       li.innerHTML =
         `<span class="trade-date">${t.date}</span>` +
-        `<span class="trade-symbol">${t.symbol}</span>` +
+        `<span class="trade-symbol">${t.count} ${label}</span>` +
         `<span class="trade-pnl ${sign}">${fmt(t.pnl_eur)}</span>`;
       list.appendChild(li);
     }
