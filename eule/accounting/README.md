@@ -1,14 +1,15 @@
 # eule.accounting — GbR-Buchhaltung
 
 Doppelte Buchführung für den Joint-Account `real2-ibkr` (IBKR-Konto, Holder A
-und B als GbR). Erzeugt aus User-gepflegten YAMLs + IBKR-Statement-of-Funds:
+und B als GbR). Erzeugt aus dem IBKR-Statement-of-Funds + manuell gepflegten
+Cash-Bewegungen:
 
 - **berechnete Sicht** für die mobile Vercel-App (Saldo pro Holder, letzte
   Trades — Token-basierte URL pro Holder)
 - **Doppik-Reports** (Journal, Hauptbuch, Steuer-Report) für den Steuerberater
 
 Zentrale Eigenschaft: deterministische Erzeugung aus reproduzierbaren Quellen.
-Kein LLM, kein State außerhalb der YAMLs und der CSVs.
+Kein LLM, keine persistierten Aggregate — nur Cache-CSVs + User-YAMLs.
 
 ## Verteilungsregeln (symmetrisch)
 
@@ -33,25 +34,23 @@ Externe Aufwendungen werden nach reinem `capital_share` aufgeteilt (50:50 bei
 ## Datenfluss
 
 ```
-IBKR-Flex-Query                    User-managed (Obsidian-Vault)
-  Statement of Funds                  ~/Dokumente/obsidian/tradingGbr/
-    (Activity Flex Query,                config.yaml
-     Section "Statement of Funds",        cash.yaml
-     LevelOfDetail=BaseCurrency)          tokens.yaml
+IBKR Flex Web Service                  User-managed (Obsidian-Vault)
+  Activity Flex Query                    ~/Dokumente/obsidian/tradingGbr/
+  (Statement of Funds,                       config.yaml
+   LevelOfDetail=BaseCurrency)               cash.yaml   ← nur was NICHT aus IBKR kommt
+        │                                    tokens.yaml
+        │ eule accounting fetch              sof/        ← Cache (CSV-Archiv)
+        ▼                                       sof-current.csv      (rolling, ueberschrieben)
+  ~/Dokumente/obsidian/tradingGbr/sof/         sof-2024.csv         (Archive, einmal gezogen)
+        │                                       sof-2025.csv         (Archive, einmal gezogen)
         │
-        │ eule accounting import-sof
+        │ eule accounting refresh
         ▼
-  manual_trades.yaml ◄─────────────────┐
-                                       │
-                          eule accounting refresh
-                                       │
-                                       ▼
-                            web/balances.json (für Vercel)
-                            ledger/journal/tax CSV (für Steuerberater)
+  web/balances.json (für Vercel) + ledger/journal/tax CSV
 ```
 
-User-Workflow: `eule accounting refresh && git push` → Vercel deployt
-automatisch.
+User-Workflow: `eule accounting fetch && eule accounting refresh && git push`
+→ Vercel deployt automatisch.
 
 ## Kontenrahmen
 
@@ -99,12 +98,12 @@ Einlage / Entnahme / Transfer: siehe Docstring in `journal.py`.
 Alle in `~/Dokumente/obsidian/tradingGbr/` (Override via
 `EULE_TRADINGGBR_DIR`). Beispiele unter `eule/accounting/examples/*.yaml`.
 
-| Datei | Inhalt | Pflege |
+| Pfad | Inhalt | Pflege |
 |---|---|---|
 | `config.yaml` | Holders, Operator, Premium-pct, Pfad zur balances.json | manuell, einmalig |
-| `cash.yaml` | Einlagen, Entnahmen, Transfers, externe Kosten + IBKR-Cash-Adjustments | manuell + via `import-sof` |
-| `manual_trades.yaml` | Trade-PnL pro (Symbol, AssetClass) | via `import-sof` |
+| `cash.yaml` | deposits, withdrawals, transfers, externe Aufwendungen (Giro) | manuell |
 | `tokens.yaml` | Token pro Holder für Vercel-App-URL | manuell |
+| `sof/*.csv` | IBKR-Statement-of-Funds-Cache (Trades + IBKR-Cash-Adjustments) | via `fetch` |
 
 ### config.yaml — Premium-Schlüssel
 
@@ -121,48 +120,42 @@ performance_fee:
 ## CLI-Befehle
 
 ```
-eule accounting refresh                 # Lädt alles, schreibt web/balances.json
+eule accounting fetch                    # IBKR Flex API -> sof/sof-current.csv
+eule accounting refresh                  # liest alles, schreibt web/balances.json
 eule accounting balances [--format json]
 eule accounting journal [--year YYYY] [--format csv]
 eule accounting ledger  [--year YYYY] [--format csv]
 eule accounting tax     [--year YYYY] [--format csv]
-eule accounting import-sof <files...>   # SoF → manual_trades.yaml + cash.yaml-Block
 ```
 
-### import-sof — SoF als Single Source of Truth
+### fetch — IBKR Flex Web Service
 
-Statement of Funds (Activity Flex Query, Section *Statement of Funds*,
-LevelOfDetail=BaseCurrency) liefert für jede Cash-Bewegung den fertig in EUR
-konvertierten Wert. Damit ist es die definitive Wahrheit für das EUR-Cash-
-Konto — bevorzugt gegenüber Trade-Confirmations, weil:
+`fetch` ruft die konfigurierte Activity Flex Query (Section *Statement of
+Funds*, LevelOfDetail=BaseCurrency, Format=CSV) ab und schreibt das Resultat
+als `sof/sof-current.csv`. Voraussetzung: `EULE_IBKR_FLEX_TOKEN` und
+`EULE_IBKR_FLEX_QUERY_ID` in `.env`.
 
-- Keine FX-Drift zwischen Trade-Date-Konvertierung und tatsächlichem
-  Saldo (Open- vs. Close-Leg-Kurse).
-- Alle Cash-Posten (Trades, Other Fees, Adjustments) in einem Format.
-- Storno-Buchungen werden korrekt mit Vorzeichen abgebildet.
+Token + Query-ID anlegen im IBKR Account Management:
+- *Reporting → Settings → Flex Web Service* → Token generieren (1 Jahr gültig)
+- *Reporting → Flex Queries* → Activity Flex Query mit Section *Statement of
+  Funds*, LevelOfDetail=BaseCurrency, Format=CSV anlegen
 
-Klassifikation:
+Die Flex-Query ist auf 365 Tage limitiert. Für Historie länger als 1 Jahr:
+einmalige Custom-Date-Range-Queries pro Jahr ziehen und als
+`sof/sof-{jahr}.csv` ins Cache-Verzeichnis legen.
 
-| Bedingung | Bedeutung | Behandlung |
-|---|---|---|
-| `AssetClass != ''` | Trade (FUT/OPT/FOP/CASH) | aggregiert pro `(Description, AssetClass)` → manual_trades.yaml |
-| `AssetClass == '' && \|amount\| ≥ 100` | Cash Receipt / Disbursement | **skipped** — bereits in cash.yaml als `transfers` |
-| `AssetClass == '' && \|amount\| < 100` | Fee / Adjustment | aggregiert pro Datum (mit Vorzeichen) → cash.yaml expenses-Block |
+### refresh — alles berechnen
 
-Trades werden über alle Tagesposten hinweg aggregiert (`Datum = Close-Date`),
-damit die 60:40-Verteilung pro abgeschlossenem Roundtrip greift und nicht pro
-Mark-to-Market-Tag.
+`refresh` liest:
+1. `sof/*.csv` → Trade-Aggregate + IBKR-Cash-Adjustments
+2. `cash.yaml` → manuelle deposits/withdrawals/transfers/externe Aufwendungen
+3. `config.yaml` → Verteilungsregeln
 
-Limit pro Flex-Query: 365 Tage. Mehrere CSVs einfach zusammen übergeben:
+→ Schreibt `web/balances.json` für die Vercel-App.
 
-```sh
-eule accounting import-sof \
-    ~/Downloads/sof-2024.csv \
-    ~/Downloads/sof-2025.csv \
-    --out-trades ~/Dokumente/obsidian/tradingGbr/manual_trades.yaml
-```
-
-Dedupliziert über `(date, amount, asset_class, description)`.
+Beim Mehrfach-Lesen mehrerer SoF-CSVs gewinnt **pro Datum** das File mit den
+meisten Posten an dem Tag (typischerweise das umfassendere Statement). Damit
+ist es egal, wenn `sof-current.csv` zeitlich mit `sof-2025.csv` überlappt.
 
 ## Vercel-App (`web/`)
 
@@ -186,19 +179,20 @@ eule/accounting/
 ├── README.md              # diese Datei
 ├── allocator.py           # Symmetrische 60:40-Verteilung
 ├── balances.py            # Berechnete Sicht (Saldo pro Holder)
-├── cash.py                # Loader cash.yaml — CashLedger
+├── cash.py                # Loader cash.yaml — CashLedger + Filter-Helper
 ├── chart.py               # Kontenrahmen
 ├── cli.py                 # typer accounting_app
 ├── config.py              # Loader config.yaml — AccountingConfig
 ├── examples/              # Beispiel-YAMLs
 ├── export.py              # JSON + CSV-Writer
-├── import_sof.py          # IBKR-Statement-of-Funds-Importer
+├── fetch.py               # IBKR Flex Web Service Client
+├── import_sof.py          # SoF-CSV-Parser + Aggregator
 ├── journal.py             # Buchungs-Generator (Roundtrips + Cash → Postings)
 ├── ledger.py              # Hauptbuch / Konto-Salden aus Postings
-├── manual_trades.py       # Loader manual_trades.yaml
 ├── models.py              # Posting, HolderBalance, AccountBalance
+├── state.py               # SoF + cash.yaml -> (Roundtrips, CashLedger)
 └── tax.py                 # Steuer-Report (Anlage KAP)
 ```
 
-Tests in `tests/test_accounting.py`. Keine Side-Effects beim Importieren
+Tests in `tests/test_accounting*.py`. Keine Side-Effects beim Importieren
 (außer Konfiguration laden bei CLI-Calls).

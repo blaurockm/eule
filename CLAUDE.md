@@ -45,6 +45,8 @@ DB-Zugang über Umgebungsvariablen (in `~/eule/.env` auf systematic):
 | `EULE_DB_STAGING_HL` | Staging HL | `postgresql://...` |
 | `EULE_HASE_DIR` | Hase-Verzeichnis (Logs, Fuchs) | `~/fin/hase` (default) |
 | `EULE_TRADINGGBR_DIR` | tradingGbr-Buchhaltungsdaten | `~/Dokumente/obsidian/tradingGbr` (default) |
+| `EULE_IBKR_FLEX_TOKEN` | IBKR Flex Web Service Token (1 Jahr gueltig) | aus IBKR Account Management |
+| `EULE_IBKR_FLEX_QUERY_ID` | Flex-Query-ID fuer Statement of Funds | aus IBKR Flex Queries |
 
 ## Regeln
 
@@ -72,7 +74,7 @@ DB-Zugang über Umgebungsvariablen (in `~/eule/.env` auf systematic):
 - `eule precheck` — Health-Check (Hase-APIs gegen Baselines)
 - `eule bot` — Wachtel Telegram Bot
 - `eule ep` — EP Scanner, Trades, Morning Brief + Email
-- `eule accounting` — GbR-Buchhaltung fuer Joint-Account real2-ibkr (refresh, balances, journal, ledger, tax)
+- `eule accounting` — GbR-Buchhaltung fuer Joint-Account real2-ibkr (fetch, refresh, balances, journal, ledger, tax)
 
 ### Eule Accounting (GbR-Buchhaltung)
 
@@ -86,23 +88,27 @@ Modul `eule.accounting` fuer den Joint-Account hinter `EULE_DB_REAL2_IBKR`.
 
 **Datenquellen** (alle in `~/Dokumente/obsidian/tradingGbr/`, Override via `EULE_TRADINGGBR_DIR`):
 - `config.yaml` — Holders, Operator, Verguetungsregel, Pfad zur balances.json
-- `cash.yaml` — Einlagen, Entnahmen, Transfers, externe Kosten + IBKR-Cash-Adjustments
-- `manual_trades.yaml` — Trades aus IBKR-Statement-of-Funds (Per-Symbol-Aggregation)
+- `cash.yaml` — deposits, withdrawals, transfers, externe Aufwendungen (Giro) — NUR was nicht aus IBKR kommt
 - `tokens.yaml` — Token pro Holder fuer Vercel-App-URL
+- `sof/*.csv` — IBKR-Statement-of-Funds-Cache (Trades + IBKR-Cash-Adjustments)
 
 **Single source of truth**: IBKR-Statement-of-Funds (Activity Flex Query, Section
-"Statement of Funds", LevelOfDetail=BaseCurrency). Daraus werden manual_trades.yaml
-und die IBKR-Cash-Adjustment-Eintraege in cash.yaml generiert via
-`eule accounting import-sof <files...> --out-trades ... [--out-fees ...]`.
+"Statement of Funds", LevelOfDetail=BaseCurrency). Wird per `eule accounting fetch`
+aus dem IBKR Flex Web Service gezogen und nach `sof/sof-current.csv` geschrieben.
+Aeltere Jahre als statische Archive (`sof-2024.csv`, `sof-2025.csv`) daneben.
+
+Beim Refresh werden alle `sof/*.csv` gelesen; pro Datum gewinnt das File mit den
+meisten Posten (typischerweise das umfassendste Statement). Keine persistierten
+Aggregate — die Pipeline rechnet jedes Mal frisch aus dem Cache.
 
 Klassifikation (siehe `import_sof.py`):
 - AssetClass != ''                               → Trade (FUT/OPT/FOP/CASH)
 - AssetClass == '' und |amount| >= 100 EUR       → Transfer (skip — bereits in cash.yaml als transfers)
 - AssetClass == '' und |amount| < 100 EUR        → Fee/Adjustment (mit Vorzeichen)
 
-Trades werden pro (Description, AssetClass) ueber alle Cashflows aggregiert
-(eine Buchung pro Roundtrip, Datum = Close-Date). Damit greift die 10%-
-Verguetung pro abgeschlossenem Roundtrip und nicht pro Mark-to-Market-Tag.
+Trades werden pro (Description, AssetClass, Geschaeftsjahr) ueber alle Cashflows
+aggregiert (eine Buchung pro Roundtrip, Datum = Close-Date). Per-Year-Split
+verhindert, dass cross-year Symbole (z.B. EUR.USD) in einem Aggregat zusammenfallen.
 
 `CashExpense.amount_eur` darf negativ sein (Storno einer fruheren Buchung):
 das Journal kehrt dann Soll/Haben um.
@@ -110,14 +116,17 @@ das Journal kehrt dann Soll/Haben um.
 Beispiel-Templates: `eule/accounting/examples/*.yaml`.
 
 **Outputs**:
+- `eule accounting fetch` — IBKR Flex API → `sof/sof-current.csv`
+- `eule accounting refresh` — liest sof/*.csv + cash.yaml, schreibt `web/balances.json`
 - `eule accounting balances --format json` — berechnete Sicht (Saldo pro Holder)
 - `eule accounting journal --year YYYY --format csv` — Doppik-Journal fuer Steuerberater
 - `eule accounting ledger --year YYYY --format csv` — Hauptbuch (Konten-Salden)
-- `eule accounting tax --year YYYY --format csv` — Steuer-Report (Kapitaleinkuenfte + Honorar)
-- `eule accounting refresh` — schreibt `web/balances.json` fuer die Vercel-App
-- `eule accounting import-sof <files...>` — generiert manual_trades.yaml + cash.yaml-Fees-Block aus IBKR-Statement-of-Funds-CSVs
+- `eule accounting tax --year YYYY --format csv` — Steuer-Report (Kapitaleinkuenfte)
 
-**Vercel-App** (`web/`): vanilla HTML+JS, kein Build. Vercel-Project auf das Repo zeigen, Root Directory = `web/`. Workflow: `eule accounting refresh && git push`.
+**Workflow**: `eule accounting fetch && eule accounting refresh && git push`
+→ Vercel deployt automatisch.
+
+**Vercel-App** (`web/`): vanilla HTML+JS, kein Build. Vercel-Project auf das Repo zeigen, Root Directory = `web/`.
 
 **Steuerlicher Hinweis**: 60:40 als symmetrischer Verteilungsschluessel der Trading-GbR ist sauber modellierbar als Mitunternehmerschaft (alles §20 Anlage KAP). Muss aber im Gesellschaftsvertrag dokumentiert sein, sonst kann das Finanzamt den Schluessel auf 50:50 zurueckrechnen. Vor Live-Gang mit Steuerberater abstimmen. Details in `eule/accounting/README.md`.
 

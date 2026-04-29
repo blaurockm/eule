@@ -1,4 +1,4 @@
-"""CLI fuer eule accounting — refresh, balances, journal, ledger, tax."""
+"""CLI fuer eule accounting — fetch, refresh, balances, journal, ledger, tax."""
 
 from datetime import date
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 import typer
 
 from eule.accounting.balances import compute_balances
-from eule.accounting.cash import load_cash
+from eule.accounting.cash import CashLedger
 from eule.accounting.config import (
     AccountingConfig,
     AccountingConfigError,
@@ -19,19 +19,15 @@ from eule.accounting.export import (
     write_ledger_csv,
     write_tax_csv,
 )
-from eule.accounting.import_sof import (
-    aggregate_fees as aggregate_sof_fees,
-    aggregate_trades as aggregate_sof_trades,
-    parse_sof_files,
-    render_fees_yaml as render_sof_fees_yaml,
-    render_trades_yaml as render_sof_trades_yaml,
+from eule.accounting.fetch import (
+    FlexError,
+    fetch_sof_csv,
+    sof_current_path,
 )
 from eule.accounting.journal import build_journal
 from eule.accounting.ledger import compute_account_balances, journal_is_balanced
-from eule.accounting.manual_trades import load_manual_trades
+from eule.accounting.state import SofStateError, load_state_from_sof
 from eule.accounting.tax import tax_report
-from eule.bewertung.trades import detect_roundtrips, load_trades
-from eule.db import get_env_info
 from eule.models import Roundtrip
 from eule.output import console, output_json
 
@@ -50,28 +46,13 @@ def _load_cfg() -> AccountingConfig:
         raise typer.Exit(1)
 
 
-def _load_roundtrips(cfg: AccountingConfig) -> tuple[list[Roundtrip], int, int]:
-    """Laedt Hase-Roundtrips + manuelle Trades fuer das Environment.
-
-    Wenn cfg.use_hase_db=false, wird die Hase-DB nicht abgefragt — manual_trades.yaml
-    ist dann die einzige Trade-Quelle.
-
-    Returns:
-        (combined_roundtrips, db_count, manual_count)
-    """
-    if cfg.use_hase_db:
-        conn, runtime = get_env_info(cfg.env)
-        try:
-            trades = load_trades(conn, runtime)
-        finally:
-            conn.close()
-        db_rts = detect_roundtrips(trades)
-    else:
-        db_rts = []
-    manual_rts = load_manual_trades()
-    combined = db_rts + manual_rts
-    combined.sort(key=lambda r: r.exit_ts)
-    return combined, len(db_rts), len(manual_rts)
+def _load_state() -> tuple[list[Roundtrip], CashLedger]:
+    """Trades + bereinigtes CashLedger aus sof/*.csv + cash.yaml."""
+    try:
+        return load_state_from_sof()
+    except SofStateError as e:
+        console.print(f"[red]SoF-State-Fehler:[/red] {e}")
+        raise typer.Exit(1)
 
 
 def _resolve_path(value: str) -> Path:
@@ -82,14 +63,54 @@ def _resolve_path(value: str) -> Path:
     return p
 
 
+@accounting_app.command(name="fetch")
+def fetch_cmd(
+    out: str = typer.Option(
+        "",
+        "--out",
+        help="Ziel-Pfad (Default: <tradinggbr>/sof/sof-current.csv)",
+    ),
+) -> None:
+    """Holt aktuelles Statement of Funds via IBKR Flex Web Service.
+
+    Voraussetzung: EULE_IBKR_FLEX_TOKEN und EULE_IBKR_FLEX_QUERY_ID in .env.
+    Im IBKR Account Management Token unter Reporting -> Settings ->
+    Flex Web Service generieren, Query unter Reporting -> Flex Queries
+    anlegen (Activity Flex Query, Section "Statement of Funds",
+    LevelOfDetail=BaseCurrency, Format=CSV).
+
+    Schreibt die laufend aktualisierte CSV nach sof-current.csv. Archiv-
+    CSVs (sof-2024.csv, sof-2025.csv, ...) liegen daneben und werden
+    spaeter beim Refresh gemeinsam gelesen + dedupliziert.
+    """
+    if out:
+        target = Path(out).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        target = sof_current_path()
+
+    console.print(
+        "[cyan]IBKR Flex Web Service:[/cyan] requesting Statement of Funds..."
+    )
+
+    try:
+        csv_text = fetch_sof_csv()
+    except FlexError as e:
+        console.print(f"[red]Fetch fehlgeschlagen:[/red] {e}")
+        raise typer.Exit(1)
+
+    target.write_text(csv_text)
+    n_lines = csv_text.count("\n") + 1
+    console.print(f"[green]Geschrieben:[/green] {target} ({n_lines} Zeilen)")
+
+
 @accounting_app.command(name="refresh")
 def refresh_cmd(
     format: str = typer.Option("markdown", "--format", help="markdown oder json"),
 ) -> None:
-    """Laedt Trades + Cash, berechnet Salden, schreibt balances.json fuer Vercel-App."""
+    """Berechnet Salden und schreibt balances.json fuer Vercel-App."""
     cfg = _load_cfg()
-    cash = load_cash()
-    rts, db_count, manual_count = _load_roundtrips(cfg)
+    rts, cash = _load_state()
     balances = compute_balances(rts, cash, cfg)
 
     target_raw = cfg.balances_json_path
@@ -106,8 +127,6 @@ def refresh_cmd(
                 "target": str(target),
                 "balances": [b.to_dict() for b in balances.values()],
                 "roundtrips_count": len(rts),
-                "roundtrips_db": db_count,
-                "roundtrips_manual": manual_count,
                 "deposits_count": len(cash.deposits),
                 "withdrawals_count": len(cash.withdrawals),
                 "expenses_count": len(cash.expenses),
@@ -117,7 +136,7 @@ def refresh_cmd(
 
     console.print(f"[green]Refresh OK[/green] -> {target}")
     console.print(
-        f"  {len(rts)} Roundtrips ({db_count} DB + {manual_count} manuell) | "
+        f"  {len(rts)} Roundtrips | "
         f"{len(cash.deposits)} Einlagen | {len(cash.withdrawals)} Entnahmen | "
         f"{len(cash.expenses)} Aufwendungen"
     )
@@ -135,8 +154,7 @@ def balances_cmd(
 ) -> None:
     """Aktueller Saldo pro Holder (berechnete Sicht)."""
     cfg = _load_cfg()
-    cash = load_cash()
-    rts, _, _ = _load_roundtrips(cfg)
+    rts, cash = _load_state()
     balances = compute_balances(rts, cash, cfg)
 
     if holder:
@@ -167,8 +185,7 @@ def journal_cmd(
 ) -> None:
     """Buchungs-Journal (chronologisch, Doppik)."""
     cfg = _load_cfg()
-    cash = load_cash()
-    rts, _, _ = _load_roundtrips(cfg)
+    rts, cash = _load_state()
     postings = build_journal(rts, cash, cfg)
 
     if year:
@@ -203,8 +220,7 @@ def ledger_cmd(
 ) -> None:
     """Hauptbuch (Konten-Salden)."""
     cfg = _load_cfg()
-    cash = load_cash()
-    rts, _, _ = _load_roundtrips(cfg)
+    rts, cash = _load_state()
     postings = build_journal(rts, cash, cfg)
     if year:
         postings = [p for p in postings if p.date.year == year]
@@ -238,8 +254,7 @@ def tax_cmd(
 ) -> None:
     """Steuer-Report: Kapitaleinkuenfte pro Holder (60:40 symmetrisch)."""
     cfg = _load_cfg()
-    cash = load_cash()
-    rts, _, _ = _load_roundtrips(cfg)
+    rts, cash = _load_state()
     expenses_year = sum(e.amount_eur for e in cash.expenses if e.date.year == year)
     lines = tax_report(rts, cfg, expenses_total=expenses_year, year=year)
 
@@ -267,83 +282,3 @@ def tax_cmd(
         "(Anlage KAP). Aufwandsanteil ist info-only, nicht als Werbungskosten abziehbar "
         "(§20 Abs. 9 EStG).[/dim]"
     )
-
-
-@accounting_app.command(name="import-sof")
-def import_sof_cmd(
-    files: list[Path] = typer.Argument(
-        ..., help="IBKR-Statement-of-Funds-CSVs (Activity Flex Query, alle Types)"
-    ),
-    out_trades: str = typer.Option(
-        "", "--out-trades", help="Ziel fuer Trade-YAML (Default: stdout)"
-    ),
-    out_fees: str = typer.Option(
-        "", "--out-fees", help="Ziel fuer Fees-YAML (Default: nach Trades auf stdout)"
-    ),
-) -> None:
-    """Importiert ein vollstaendiges IBKR-Statement-of-Funds.
-
-    Aus dem SoF werden zwei YAML-Bloecke erzeugt:
-      - manual_trades.yaml: ein Eintrag pro (Datum, Symbol, AssetClass)
-        mit dem fertig in EUR konvertierten PnL.
-      - cash.yaml expenses-Block: aggregiert pro Datum, mit Vorzeichen
-        (Storni werden als negativer amount_eur gerendert), paid_from: broker.
-
-    Cash Receipts und Disbursements (|amount| >= 100 EUR) werden NICHT
-    importiert — sie stehen schon in cash.yaml als transfers.
-
-    Default-Output: beides nach stdout. Mit --out-trades / --out-fees in
-    separate Dateien schreiben.
-    """
-    files = [Path(p).expanduser() for p in files]
-    for p in files:
-        if not p.exists():
-            console.print(f"[red]Datei nicht gefunden:[/red] {p}")
-            raise typer.Exit(1)
-
-    rows = parse_sof_files(files)
-    trades = aggregate_sof_trades(rows)
-    fees = aggregate_sof_fees(rows)
-
-    n_trade_rows = sum(1 for r in rows if r.asset_class)
-    n_fee_rows = sum(
-        1 for r in rows if not r.asset_class and abs(r.amount_eur) < 100
-    )
-    n_xfer_rows = sum(
-        1 for r in rows if not r.asset_class and abs(r.amount_eur) >= 100
-    )
-
-    pnl_total = sum(t.pnl_eur for t in trades)
-    fees_total = sum(a.netto_eur for a in fees)
-
-    summary = [
-        f"Aus {len(files)} SoF-Datei(en): {len(rows)} Cash-Bewegungen total",
-        f"  Trades:   {n_trade_rows:>4} Zeilen -> {len(trades)} Aggregate, "
-        f"Σ PnL {pnl_total:+,.2f} EUR",
-        f"  Fees:     {n_fee_rows:>4} Zeilen -> {len(fees)} Aggregate, "
-        f"Σ Netto {fees_total:+,.2f} EUR",
-        f"  Transfers (skipped): {n_xfer_rows} Zeilen "
-        "(stehen in cash.yaml als transfers)",
-    ]
-
-    trades_text = render_sof_trades_yaml(trades, header_comment="\n".join(summary))
-    fees_text = render_sof_fees_yaml(fees, header_comment="\n".join(summary))
-
-    if out_trades:
-        Path(out_trades).expanduser().write_text(trades_text)
-        console.print(f"[green]Trades:[/green] {out_trades}")
-    if out_fees:
-        Path(out_fees).expanduser().write_text(fees_text)
-        console.print(f"[green]Fees:[/green] {out_fees}")
-
-    if not (out_trades or out_fees):
-        import sys
-        for ln in summary:
-            print(f"# {ln}", file=sys.stderr)
-        typer.echo("# === manual_trades.yaml block ===")
-        typer.echo(trades_text)
-        typer.echo("# === cash.yaml expenses block ===")
-        typer.echo(fees_text)
-    else:
-        for ln in summary:
-            console.print(f"  {ln}")

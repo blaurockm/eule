@@ -1,15 +1,17 @@
 # Manuelle Cash-Bewegungen fuer die GbR-Buchhaltung.
 # Ziel: ~/Dokumente/obsidian/tradingGbr/cash.yaml
+#
+# Pflegt nur was NICHT aus dem IBKR-Statement-of-Funds kommt. Trades und
+# IBKR-Cash-Adjustments werden direkt aus sof/*.csv gelesen.
 
 # Vier Sections:
 #   deposits:    Einlagen pro Holder. Buchung: 1100 an 0H00 (Geld kommt aufs Giro).
 #   withdrawals: Privatentnahmen pro Holder. Buchung: ueber Giro.
-#   expenses:    Aufwendungen. paid_from steuert die Quelle:
-#                  giro    (Default) → 6000 an 1100 (Giro muss vorher Geld haben)
-#                  broker            → 6000 an 1200 (z.B. IBKR-eigene Gebuehren)
+#   expenses:    Externe Aufwendungen ueber Giro (Datenfeed-Abos, Kontofuehrung, ...).
+#                Buchung: 6000 an 1100. paid_from=broker wird intern fuer SoF-Fees
+#                genutzt — User pflegt nur paid_from=giro (oder weglassen, ist Default).
 #   transfers:   Cash-Bewegungen Broker <-> Giro ohne Holder-Bezug.
-#                Buchung: <to> an <from>. Pflicht, damit das Giro fuer expenses
-#                und Privatentnahmen ueberhaupt Geld hat.
+#                Pflicht, damit das Giro fuer expenses und Privatentnahmen Geld hat.
 
 deposits:
   - { date: 2024-01-15, holder: A, amount_eur: 50000, note: "Initial deposit" }
@@ -19,8 +21,8 @@ withdrawals:
   - { date: 2025-06-01, holder: A, amount_eur: 5000, note: "Privatentnahme" }
 
 expenses:
-  - { date: 2024-03-01, amount_eur: 49.90, note: "Tradingview Premium" }                       # paid_from: giro (Default)
-  - { date: 2025-02-04, amount_eur: 5.36, note: "IBKR Snapshot Subs", paid_from: broker }      # IBKR-direkte Gebuehr
+  - { date: 2024-03-01, amount_eur: 49.90, note: "Tradingview Premium" }
+  - { date: 2024-03-31, amount_eur: 8.90, note: "Kontofuehrung" }
 
 transfers:
   # Pro Einlage: Geld vom Giro aufs Broker, damit es tradierbar ist.

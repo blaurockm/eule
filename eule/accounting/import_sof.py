@@ -1,4 +1,4 @@
-"""Import von IBKR-Statement-of-Funds-CSVs als Roundtrips + Fees.
+"""Parser + Aggregator fuer IBKR-Statement-of-Funds-CSVs.
 
 Ein Statement of Funds (Flex-Query: Activity Flex Query → Section 'Statement of
 Funds', LevelOfDetail=BaseCurrency) ist die definitive Wahrheit fuer das EUR-
@@ -14,8 +14,8 @@ Klassifikation der Zeilen (siehe ``classify``):
 
 * AssetClass != ''                     → 'trade'    (FUT/OPT/FOP/CASH)
 * AssetClass == '' und |amount| >= TRANSFER_THRESHOLD → 'transfer'
-  (Cash Receipts oder Disbursements — werden NICHT importiert,
-  weil sie bereits manuell in cash.yaml als ``transfers`` stehen.)
+  (Cash Receipts oder Disbursements — werden NICHT verbucht,
+  weil sie aus cash.yaml als ``transfers`` kommen.)
 * sonst                                → 'fee'      (kleine Cash-Adjustments,
                                                      i.d.R. Datafeed-Fees)
 """
@@ -130,16 +130,34 @@ def parse_sof_csv(path: Path) -> list[SofRow]:
 
 
 def parse_sof_files(paths: list[Path]) -> list[SofRow]:
-    """Liest mehrere SoF-Files, dedupliziert ueber (date, amount, asset_class, description)."""
-    seen: set[tuple[date, float, str, str]] = set()
-    out: list[SofRow] = []
+    """Liest mehrere SoF-Files. Pro Datum gewinnt das File mit den meisten
+    Posten (= das vollstaendigste).
+
+    Identische Rows innerhalb eines Files werden NICHT dedupliziert — IBKR
+    liefert haeufig mehrere identische Adjustments am selben Tag (z.B.
+    mehrere Accruals desselben Typs), und das sind echte separate Posten.
+
+    Annahme: ein File ist self-consistent fuer die Tage die es abdeckt.
+    Bei ueberlappenden Date-Ranges (z.B. Archive ueberlappt mit YTD/365d)
+    gewinnt fuer jeden einzelnen Tag das File mit den meisten Rows an
+    diesem Tag — typischerweise das jeweils umfassendere Statement.
+    """
+    by_file: list[dict[date, list[SofRow]]] = []
     for p in paths:
+        rows_by_date: dict[date, list[SofRow]] = defaultdict(list)
         for r in parse_sof_csv(p):
-            key = (r.posting_date, round(r.amount_eur, 4), r.asset_class, r.description)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(r)
+            rows_by_date[r.posting_date].append(r)
+        by_file.append(rows_by_date)
+
+    all_dates: set[date] = set()
+    for rbd in by_file:
+        all_dates.update(rbd.keys())
+
+    out: list[SofRow] = []
+    for d in sorted(all_dates):
+        candidates = [rbd[d] for rbd in by_file if d in rbd]
+        best = max(candidates, key=len)
+        out.extend(best)
     return out
 
 
@@ -153,20 +171,25 @@ def classify(row: SofRow) -> str:
 
 
 def aggregate_trades(rows: list[SofRow]) -> list[TradeAggregate]:
-    """Aggregiert Trade-Posten pro (Description, AssetClass).
+    """Aggregiert Trade-Posten pro (Description, AssetClass, Geschaeftsjahr).
 
     Datum = letztes Posting-Datum aller zugehoerigen Cashflows (Close-Date
     des Trades). Das passt zur Roundtrip-Definition der Allocator-Logik:
     eine Verguetung pro abgeschlossenem Roundtrip, nicht pro Mark-to-Market.
+
+    Per-Year-Split: Symbole, die ueber Jahresgrenzen hinweg gehandelt werden
+    (z.B. FX-Cashflows EUR.USD) wuerden sonst in einem Aggregat zusammenfallen
+    und das letzte Datum bestimmen — was fuer den Steuer-Report (pro
+    Geschaeftsjahr) falsch ist. Pro Jahr ein eigenes Aggregat verhindert das.
     """
-    by_key: dict[tuple[str, str], list[SofRow]] = defaultdict(list)
+    by_key: dict[tuple[str, str, int], list[SofRow]] = defaultdict(list)
     for r in rows:
         if classify(r) != "trade":
             continue
-        by_key[(r.description, r.asset_class)].append(r)
+        by_key[(r.description, r.asset_class, r.posting_date.year)].append(r)
 
     out: list[TradeAggregate] = []
-    for (desc, ac), items in by_key.items():
+    for (desc, ac, _year), items in by_key.items():
         pnl = round(sum(r.amount_eur for r in items), 2)
         out.append(
             TradeAggregate(
@@ -196,61 +219,3 @@ def aggregate_fees(rows: list[SofRow]) -> list[FeeAggregate]:
             continue
         out.append(FeeAggregate(posting_date=d, netto_eur=netto, count=len(items)))
     return out
-
-
-# ──────────────────────────────────────────
-# YAML-Output
-# ──────────────────────────────────────────
-
-
-def _yaml_str(s: str) -> str:
-    if any(c in s for c in ",:#'\""):
-        return "'" + s.replace("'", "''") + "'"
-    return s
-
-
-def render_trades_yaml(
-    aggregated: list[TradeAggregate], *, header_comment: str = ""
-) -> str:
-    """YAML fuer manual_trades.yaml — eine Zeile pro Trade-Aggregat."""
-    lines: list[str] = []
-    if header_comment:
-        for ln in header_comment.splitlines():
-            lines.append(f"# {ln}" if ln else "#")
-        lines.append("")
-    lines.append("manual_trades:")
-    for a in aggregated:
-        note = f"{a.asset_class} | sof"
-        lines.append(
-            f"  - {{ date: {a.posting_date.isoformat()}, "
-            f"symbol: {_yaml_str(a.description)}, "
-            f"pnl_eur: {a.pnl_eur:.2f}, "
-            f"note: {_yaml_str(note)} }}"
-        )
-    return "\n".join(lines) + "\n"
-
-
-def render_fees_yaml(
-    aggregated: list[FeeAggregate], *, header_comment: str = ""
-) -> str:
-    """YAML-Block fuer cash.yaml expenses-Section.
-
-    Aufwand: amount_eur > 0 (netto_eur < 0).
-    Storno:  amount_eur < 0 (netto_eur > 0).
-    """
-    lines: list[str] = []
-    if header_comment:
-        for ln in header_comment.splitlines():
-            lines.append(f"# {ln}" if ln else "#")
-        lines.append("")
-    lines.append("expenses:")
-    for a in aggregated:
-        amt = -a.netto_eur  # Cash-Effekt umkehren: negativ in SoF = Aufwand
-        note = f"IBKR-Cash-Adjustments ({a.count} Posten)"
-        lines.append(
-            f"  - {{ date: {a.posting_date.isoformat()}, "
-            f"amount_eur: {amt:.2f}, "
-            f"paid_from: broker, "
-            f"note: {_yaml_str(note)} }}"
-        )
-    return "\n".join(lines) + "\n"

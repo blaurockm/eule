@@ -135,3 +135,19 @@ def load_cash(path: Path | None = None) -> CashLedger:
         expenses=expenses,
         transfers=transfers,
     )
+
+
+def filter_out_broker_expenses(cash: CashLedger) -> CashLedger:
+    """Entfernt alle expenses mit paid_from=broker.
+
+    Use-Case: SoF-basierte Pipeline. Die broker-Expenses (IBKR-Cash-
+    Adjustments) kommen dort direkt aus dem SoF und wuerden sonst
+    doppelt gezaehlt — einmal als IBKR-Adjustment-Block in cash.yaml,
+    einmal als SoF-Fee.
+    """
+    return CashLedger(
+        deposits=cash.deposits,
+        withdrawals=cash.withdrawals,
+        expenses=[e for e in cash.expenses if e.paid_from != "broker"],
+        transfers=cash.transfers,
+    )

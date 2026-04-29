@@ -20,12 +20,11 @@ from eule.accounting.config import (
 )
 from eule.accounting.journal import build_journal
 from eule.accounting.ledger import compute_account_balances
-from eule.accounting.manual_trades import _to_roundtrip, load_manual_trades
 from eule.accounting.tax import tax_report
 from eule.models import Roundtrip
 
 
-def _cfg(fee_pct: float = 0.10, use_hase_db: bool = True) -> AccountingConfig:
+def _cfg(fee_pct: float = 0.10) -> AccountingConfig:
     return AccountingConfig(
         env="real2-ibkr",
         base_currency="EUR",
@@ -41,7 +40,6 @@ def _cfg(fee_pct: float = 0.10, use_hase_db: bool = True) -> AccountingConfig:
         ),
         fiscal_year_start="01-01",
         balances_json_path="balances.json",
-        use_hase_db=use_hase_db,
     )
 
 
@@ -412,52 +410,6 @@ class TestTaxReport:
 
 
 # ─────────────────────────────────────────
-# Manuelle Trades
-# ─────────────────────────────────────────
-
-
-class TestManualTrades:
-    def test_to_roundtrip_positive_pnl(self):
-        rt = _to_roundtrip(date(2025, 3, 15), "TLT", 250.0, "")
-        assert rt.pnl == pytest.approx(250.0)
-        assert rt.exit_date == date(2025, 3, 15)
-        assert rt.strategy_key == "manual"
-
-    def test_to_roundtrip_negative_pnl(self):
-        rt = _to_roundtrip(date(2025, 3, 15), "TLT", -50.0, "")
-        assert rt.pnl == pytest.approx(-50.0)
-
-    def test_to_roundtrip_zero_pnl(self):
-        rt = _to_roundtrip(date(2025, 3, 15), "TLT", 0.0, "")
-        assert rt.pnl == pytest.approx(0.0)
-
-    def test_loader_missing_file_returns_empty(self, tmp_path):
-        rts = load_manual_trades(tmp_path / "does_not_exist.yaml")
-        assert rts == []
-
-    def test_loader_parses_yaml(self, tmp_path):
-        path = tmp_path / "manual_trades.yaml"
-        path.write_text(
-            "manual_trades:\n"
-            "  - { date: 2025-03-15, symbol: TLT, pnl_eur: 250.0, note: 'Stop' }\n"
-            "  - { date: 2025-04-01, symbol: SPX, pnl_eur: -50.0 }\n"
-        )
-        rts = load_manual_trades(path)
-        assert len(rts) == 2
-        assert rts[0].pnl == pytest.approx(250.0)
-        assert rts[1].pnl == pytest.approx(-50.0)
-        assert "Stop" in rts[0].symbol  # note wird in Symbol angehaengt
-
-    def test_manual_trade_flows_through_allocator(self):
-        """Ein manueller Trade muss die Verteilungslogik genauso durchlaufen."""
-        cfg = _cfg()
-        rt = _to_roundtrip(date(2025, 3, 15), "TLT", 100.0, "")
-        alloc = allocate_pnl(rt.pnl, cfg)
-        assert alloc.operator_share == pytest.approx(60.0)
-        assert alloc.other_share == pytest.approx(40.0)
-
-
-# ─────────────────────────────────────────
 # SoF-Importer (Statement of Funds, definitive Cash-Wahrheit)
 # ─────────────────────────────────────────
 
@@ -556,48 +508,33 @@ class TestSofImporter:
         assert len(agg) == 1
         assert agg[0].netto_eur == pytest.approx(-9.27)
 
-    def test_dedupe_across_files(self, tmp_path):
+    def test_per_day_best_source_across_files(self, tmp_path):
+        """Bei ueberlappenden Files gewinnt pro Datum die Quelle mit den
+        meisten Rows. Identische Rows innerhalb eines Files bleiben erhalten.
+        """
         from eule.accounting.import_sof import parse_sof_files
+
+        # f1: 1 row am 15.07.
         f1 = self._csv(tmp_path, (
             self.HEADER
             + self._row("FUT", "-50.0", "20250715", "MES")
         ), name="a.csv")
+        # f2: 2 rows am 15.07. (z.B. zwei separate Trades selber Beschreibung
+        # — durfen NICHT als Duplikat gefiltert werden) + 1 row am 16.07.
         f2 = self._csv(tmp_path, (
             self.HEADER
-            + self._row("FUT", "-50.0", "20250715", "MES")  # dup
-            + self._row("FUT", "20.0",  "20250716", "MES")  # neu
+            + self._row("FUT", "-50.0", "20250715", "MES")
+            + self._row("FUT", "-50.0", "20250715", "MES")
+            + self._row("FUT", "20.0",  "20250716", "MES")
         ), name="b.csv")
+
         rows = parse_sof_files([f1, f2])
-        assert len(rows) == 2
 
-    def test_render_fees_yaml_inverts_sign(self, tmp_path):
-        """SoF: negative amount = Aufwand. Buchhaltung will positiven Aufwand."""
-        from eule.accounting.import_sof import FeeAggregate, render_fees_yaml
-        out = render_fees_yaml([
-            FeeAggregate(posting_date=date(2025, 8, 4), netto_eur=-9.18, count=10),
-            FeeAggregate(posting_date=date(2025, 9, 3), netto_eur=2.50, count=2),
-        ])
-        # Aufwand-Tag: positiver amount_eur in cash.yaml
-        assert "amount_eur: 9.18" in out
-        # Storno-Tag: negativer amount_eur in cash.yaml
-        assert "amount_eur: -2.50" in out
-        assert "paid_from: broker" in out
-
-    def test_render_trades_yaml(self, tmp_path):
-        from eule.accounting.import_sof import TradeAggregate, render_trades_yaml
-        out = render_trades_yaml([
-            TradeAggregate(
-                posting_date=date(2025, 7, 15),
-                description="MES 20DEC25",
-                asset_class="FUT",
-                pnl_eur=-20.0,
-                count=2,
-            ),
-        ])
-        assert "manual_trades:" in out
-        assert "MES 20DEC25" in out
-        assert "-20.00" in out
-        assert "FUT | sof" in out
+        # 15.07.: f2 gewinnt (2 rows), 16.07.: nur f2
+        assert len(rows) == 3
+        rows_jul15 = [r for r in rows if r.posting_date.day == 15]
+        assert len(rows_jul15) == 2
+        assert all(r.amount_eur == -50.0 for r in rows_jul15)
 
 
 # ─────────────────────────────────────────
