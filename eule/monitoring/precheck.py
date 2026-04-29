@@ -222,23 +222,42 @@ def _condition_active(condition: str, now: datetime) -> bool:
     return False
 
 
-def evaluate_fsm_expectation(condition: str, expected, current_state: str, now: datetime) -> str | None:
-    """Evaluate a single FSM expectation condition.
+def evaluate_fsm_expectations(
+    expectations: list[dict],
+    current_state: str,
+    now: datetime,
+) -> str | None:
+    """Evaluate FSM expectations as OR-union of all temporally active conditions.
 
-    Returns an anomaly message if the condition is temporally active but the
-    current state is not in the expected set. Returns None otherwise.
+    Conditions can overlap in time (e.g. "trading hours (09:15-17:25)" and
+    "market open first minutes" both active 09:15-09:19). A single state must
+    only satisfy *one* of the active conditions to be acceptable — we union
+    their expected sets and alert only if the current state is in none of them.
+
+    Returns an anomaly message if no active condition allows current_state,
+    or None otherwise (including when no condition is active).
     """
-    expected_states = expected if isinstance(expected, list) else [expected]
+    active: list[tuple[str, list[str]]] = []
+    for exp in expectations:
+        cond = exp["condition"]
+        if not _condition_active(cond, now):
+            continue
+        expected = exp["expected"]
+        states = expected if isinstance(expected, list) else [expected]
+        active.append((cond, states))
 
-    if current_state in expected_states:
+    if not active:
         return None
 
-    if _condition_active(condition, now):
-        return f"Unexpected FSM: {current_state} (expected {expected})"
+    allowed: set[str] = set()
+    for _, states in active:
+        allowed.update(states)
 
-    return None
+    if current_state in allowed:
+        return None
 
-    return None  # Unknown condition, skip
+    conditions = [c for c, _ in active]
+    return f"Unexpected FSM: {current_state} (expected {sorted(allowed)} for active conditions: {conditions})"
 
 
 def check_environment(env_name: str, env_config: dict, baselines: dict) -> list[tuple[str, str]]:
@@ -339,11 +358,10 @@ def check_environment(env_name: str, env_config: dict, baselines: dict) -> list[
         if valid_states and fsm_state not in valid_states:
             anomalies.append((severity, f"{prefix} Invalid FSM state: {fsm_state} (valid: {valid_states})"))
 
-        # FSM expectations (time-dependent)
-        for exp in fsm_config.get("expectations", []):
-            msg = evaluate_fsm_expectation(exp["condition"], exp["expected"], fsm_state, now)
-            if msg:
-                anomalies.append(("WARNING", f"{prefix} {msg}"))
+        # FSM expectations (time-dependent, OR-union over active conditions)
+        msg = evaluate_fsm_expectations(fsm_config.get("expectations", []), fsm_state, now)
+        if msg:
+            anomalies.append(("WARNING", f"{prefix} {msg}"))
 
         # Daily loss check
         stats = strat.get("stats", {})

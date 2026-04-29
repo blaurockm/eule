@@ -3,7 +3,16 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from eule.monitoring.precheck import _condition_active, evaluate_fsm_expectation
+from eule.monitoring.precheck import _condition_active, evaluate_fsm_expectations
+
+
+def _eval_one(condition, expected, current_state, now):
+    """Helper: wrap a single (condition, expected) pair in the list shape."""
+    return evaluate_fsm_expectations(
+        [{"condition": condition, "expected": expected}],
+        current_state,
+        now,
+    )
 
 
 def et(year, month, day, hour, minute):
@@ -88,7 +97,7 @@ class TestAnyTime:
 
 
 # ---------------------------------------------------------------------------
-# evaluate_fsm_expectation — end-to-end 1DTE scenarios
+# evaluate_fsm_expectations — end-to-end 1DTE scenarios
 # ---------------------------------------------------------------------------
 
 
@@ -97,14 +106,14 @@ class TestOneDTEScenarios:
 
     def test_wed_before_exit_in_position_ok(self):
         # On the day-after, IN_POSITION is the normal state — no anomaly.
-        msg = evaluate_fsm_expectation(
+        msg = _eval_one(
             "Wednesday before 16:00 ET", "IN_POSITION", "IN_POSITION", et(2026, 4, 22, 14, 0)
         )
         assert msg is None
 
     def test_wed_before_exit_flat_is_anomaly(self):
         # FLAT on day-after before exit: "position gone too early" → anomaly.
-        msg = evaluate_fsm_expectation(
+        msg = _eval_one(
             "Wednesday before 16:00 ET", "IN_POSITION", "FLAT", et(2026, 4, 22, 14, 0)
         )
         assert msg is not None
@@ -112,21 +121,21 @@ class TestOneDTEScenarios:
 
     def test_thursday_in_position_is_anomaly(self):
         # Thursday — neither entry nor exit day — must be FLAT.
-        msg = evaluate_fsm_expectation(
+        msg = _eval_one(
             "not Tuesday and not Wednesday", "FLAT", "IN_POSITION", et(2026, 4, 23, 12, 0)
         )
         assert msg is not None
         assert "IN_POSITION" in msg
 
     def test_monday_flat_is_ok(self):
-        msg = evaluate_fsm_expectation(
+        msg = _eval_one(
             "not Tuesday and not Wednesday", "FLAT", "FLAT", et(2026, 4, 20, 12, 0)
         )
         assert msg is None
 
     def test_tuesday_after_entry_pending_fill_ok(self):
         # PENDING_FILL is part of the expected set — order is working.
-        msg = evaluate_fsm_expectation(
+        msg = _eval_one(
             "Tuesday after 11:30 ET",
             ["IN_POSITION", "PENDING_FILL"],
             "PENDING_FILL",
@@ -136,7 +145,7 @@ class TestOneDTEScenarios:
 
     def test_tuesday_after_entry_flat_is_anomaly(self):
         # Entry time passed but strategy is still FLAT → "no setup found".
-        msg = evaluate_fsm_expectation(
+        msg = _eval_one(
             "Tuesday after 11:30 ET",
             ["IN_POSITION", "PENDING_FILL"],
             "FLAT",
@@ -149,7 +158,7 @@ class TestZeroDTEAlways:
     """spx-0dte-always: entry every weekday 11:00 ET, exit at market close."""
 
     def test_weekday_after_entry_flat_is_anomaly(self):
-        msg = evaluate_fsm_expectation(
+        msg = _eval_one(
             "weekday after 11:30 ET",
             ["IN_POSITION", "PENDING_FILL"],
             "FLAT",
@@ -159,10 +168,73 @@ class TestZeroDTEAlways:
 
     def test_weekend_flat_is_ok(self):
         # Weekday-gated rules don't fire on weekends.
-        msg = evaluate_fsm_expectation(
+        msg = _eval_one(
             "weekday after 11:30 ET",
             ["IN_POSITION", "PENDING_FILL"],
             "FLAT",
             et(2026, 4, 25, 12, 0),
         )
+        assert msg is None
+
+
+class TestOverlappingConditions:
+    """Carver-scalping style: overlapping temporal conditions must OR-union expected sets."""
+
+    # Berlin tz: 09:17 CET == 03:17 ET on a weekday → both "trading hours
+    # (09:15-17:25 CET)" and "market open first minutes" are active.
+    CARVER_EXPECTATIONS = [
+        {"condition": "trading hours (09:15-17:25 CET)", "expected": ["FANGNETZ", "EXPOSED", "FLAT", "CLOSING"]},
+        {"condition": "outside trading hours", "expected": ["IDLE", "FLAT"]},
+        {"condition": "market open first minutes", "expected": ["NO_DATA", "IDLE", "FLAT"]},
+    ]
+
+    def _berlin(self, hour, minute):
+        return datetime(2026, 4, 22, hour, minute, tzinfo=ZoneInfo("Europe/Berlin"))
+
+    def test_fangnetz_at_0917_no_anomaly(self):
+        # 09:17 CET: FANGNETZ accepted by "trading hours" — even though
+        # "market open first minutes" rejects it, the union allows it.
+        msg = evaluate_fsm_expectations(
+            self.CARVER_EXPECTATIONS, "FANGNETZ", self._berlin(9, 17)
+        )
+        assert msg is None
+
+    def test_exposed_at_0917_no_anomaly(self):
+        msg = evaluate_fsm_expectations(
+            self.CARVER_EXPECTATIONS, "EXPOSED", self._berlin(9, 17)
+        )
+        assert msg is None
+
+    def test_unknown_state_at_0917_is_anomaly(self):
+        # CLOSED is not in any active condition's expected set → alert.
+        msg = evaluate_fsm_expectations(
+            self.CARVER_EXPECTATIONS, "CLOSED", self._berlin(9, 17)
+        )
+        assert msg is not None
+        assert "CLOSED" in msg
+
+    def test_idle_at_0830_no_anomaly(self):
+        # Pre-market: only "outside trading hours" active, IDLE allowed.
+        msg = evaluate_fsm_expectations(
+            self.CARVER_EXPECTATIONS, "IDLE", self._berlin(8, 30)
+        )
+        assert msg is None
+
+    def test_fangnetz_at_0830_is_anomaly(self):
+        # Pre-market: FANGNETZ not allowed by "outside trading hours".
+        msg = evaluate_fsm_expectations(
+            self.CARVER_EXPECTATIONS, "FANGNETZ", self._berlin(8, 30)
+        )
+        assert msg is not None
+
+    def test_no_active_condition_returns_none(self):
+        # Saturday at 09:17 — neither "trading hours" nor "market open first
+        # minutes" fires (both gate on weekday); "outside trading hours" is
+        # active and accepts IDLE/FLAT, anything else alerts.
+        sat = datetime(2026, 4, 25, 9, 17, tzinfo=ZoneInfo("Europe/Berlin"))
+        msg = evaluate_fsm_expectations(self.CARVER_EXPECTATIONS, "FLAT", sat)
+        assert msg is None
+
+    def test_empty_expectations_returns_none(self):
+        msg = evaluate_fsm_expectations([], "ANYTHING", self._berlin(9, 17))
         assert msg is None
