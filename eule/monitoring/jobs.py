@@ -164,7 +164,11 @@ def job_daily_summary(
     log.info("Running daily summary")
 
     tz = ZoneInfo("Europe/Berlin")
-    date_str = datetime.now(tz).strftime("%Y-%m-%d")
+    now = datetime.now(tz)
+    date_str = now.strftime("%Y-%m-%d")
+    weekdays_de = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+    weekday_de = weekdays_de[now.weekday()]
+    date_de = f"{now.day}.{now.month}.{now.year}"
 
     # force_summary=True erzwingt den JSON-basierten Render-Pfad in precheck,
     # unabhaengig davon, ob is_daily_summary_time() gerade true ist.
@@ -188,6 +192,7 @@ def job_daily_summary(
         try:
             summary = invoke_claude(
                 full_context,
+                f"Heute ist {weekday_de}, der {date_de}. "
                 "Erstelle die taegliche Zusammenfassung (Daily Summary). "
                 "Datenquelle sind die daily-summary-*.json Files, die Hase nach "
                 "Mark-to-Market schreibt. Hase ist um diese Zeit absichtlich "
@@ -197,7 +202,7 @@ def job_daily_summary(
                 "Positionen mit signifikantem PnL. Kurz und praegnant.",
             )
             alert_callback(
-                f"<b>Daily Summary</b>\n\n{markdown_to_telegram_html(summary)}",
+                f"<b>Daily Summary</b>\n\n{summary}",
                 parse_mode="HTML",
             )
             email_body = _report_to_html(summary, title=f"Wachtel Daily Summary — {date_str}")

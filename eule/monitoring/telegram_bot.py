@@ -476,6 +476,10 @@ def invoke_claude(context: str, task: str) -> str:
 
     Waits up to CLAUDE_TIMEOUT per round, sending "Claude denkt noch..."
     status updates via Telegram between rounds. Max 5 rounds.
+
+    Returns Telegram-HTML (already through markdown_to_telegram_html) — callers
+    must NOT re-convert, sonst werden die Tags doppelt escaped und Telegram
+    zeigt sie als Literal-Text.
     """
     if not _claude_lock.acquire(timeout=5):
         return "Claude is busy with another request. Try again later."
@@ -568,7 +572,7 @@ def handle_check() -> str:
     pre_escaped = precheck_output.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return (
         f"<b>Precheck:</b>\n<pre>{pre_escaped}</pre>\n\n"
-        f"<b>Analyse:</b>\n{markdown_to_telegram_html(claude_output)}"
+        f"<b>Analyse:</b>\n{claude_output}"
     )
 
 
@@ -581,7 +585,7 @@ def handle_summary() -> str:
         "Fasse zusammen: Status jeder Strategie, PnL, Anomalien, und ob alles normal laeuft.",
     )
     add_to_history("/summary", claude_output)
-    return markdown_to_telegram_html(claude_output)
+    return claude_output
 
 
 def handle_baseline(args: str) -> str:
@@ -832,7 +836,7 @@ def handle_freetext(text: str) -> str:
     context = f"Aktueller Precheck-Status:\n{precheck_output}"
     response = invoke_claude(context, text)
     add_to_history(text, response)
-    return markdown_to_telegram_html(response)
+    return response
 
 
 # --- Mute Logic ---

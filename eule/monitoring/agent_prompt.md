@@ -91,14 +91,23 @@ Tradier wird per REST-API abgefragt (Credentials in `~/.eule/.env`).
 
 ## Hase Runtime APIs (Strategie-Monitoring)
 
-| Environment | Port | Tier |
-|---|---|---|
-| staging-ibkr | localhost:8776 | Staging |
-| staging-hl | localhost:8777 | Staging |
-| real-ibkr | localhost:8767 | Production |
-| real2-ibkr | localhost:8768 | Production |
+Aktueller Status pro Environment (Ports, Trading-Hours, ACTIVE/INACTIVE/STARTUP/SHUTDOWN)
+steht IMMER im Header des Precheck-Outputs unter "Environments (Trading-Hours aus
+fuchs-config)". Diesen Block lesen, NICHT erneut Fuchs-Configs anfassen oder Zeiten
+raten.
 
-Endpoints: /health, /status, /strategies, /portfolio, /broker
+Endpoints pro Environment: /health, /status, /strategies, /portfolio, /broker
+
+### Tageszyklus (Konzept)
+
+Hase ist KEIN dauerhaft laufender Daemon. Fuchs faehrt die Hase-Prozesse
+werktags hoch und nachts wieder runter. Konsequenzen fuer das Monitoring:
+
+- **State INACTIVE**: APIs nicht erreichbar — KEIN Alarm.
+- **State STARTUP** (erste ~2 Minuten nach Tagesstart): "API unreachable" = NORMAL,
+  Precheck unterdrueckt das automatisch.
+- **State SHUTDOWN** (letzte ~2 Minuten vor Tagesende): dito, Hase macht
+  Mark-to-Market und beendet sich, schreibt `daily-summary-{env}-{date}.json`.
 
 Debug/Diagnose-Endpoints (read-only):
 - Broker: /debug/universe, /debug/quote, /debug/timeseries, /debug/option-chain,
@@ -134,17 +143,25 @@ curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" 
 
 ## Strategie-Kontext (WICHTIG)
 
+Aktiver Status pro Strategie (FSM, PnL, "nicht aktiv heute") steht im
+"Live status"-Block des Precheck-Outputs — Claude soll DEN lesen und
+NICHT raten.
+
+Was der Precheck-Output **nicht** abdeckt (Domaenen-Wissen, das hier
+explizit bleibt):
+
 - **mcl-rsi-opencompare**: Tradet nur 6-7x/JAHR. FLAT fuer Wochen ist voellig normal.
   Nur alertieren wenn Worker dead oder Error-State.
 - **carver-scalping**: 80% der Exits sind Stop-Losses. Das ist STRUKTURELL NORMAL
   (kein Alarm). WR 38.7% ist erwartet. Profit Factor > 1.2 macht es profitabel.
 - **crypto-Strategien**: FLAT wenn BTC Kill-Switch aktiv. Regime-abhaengig.
   crypto-trendconv: nur bei BTC Vol < P75. crypto-bb-short: nur bei Vol >= P75.
-- **0DTE-Strategien**: Nur am jeweiligen Wochentag aktiv.
-  FLAT an anderen Tagen = normal. IN_POSITION + FLAT nach Entry-Zeit = beides OK
-  (Hurst-Filter kann Entry blocken).
-- **Alle 0DTE**: Nach 16:00 ET MUSS State FLAT sein (0DTE abgelaufen).
-  IN_POSITION nach 16:00 = CRITICAL.
+- **0DTE IN_POSITION nach Entry**: Hurst-Filter kann Entry blocken,
+  also ist auch FLAT nach Entry-Zeit OK.
+
+(Die Wochentags-Pflicht der 0DTE-Strategien und die "post-16:00 ET muss FLAT"-Regel
+werden vom Precheck automatisch gepruef und im Output annotiert — kein
+manuelles Re-Checken noetig.)
 
 ## Hamster Data Pipeline
 

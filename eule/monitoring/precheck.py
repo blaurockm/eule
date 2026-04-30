@@ -30,27 +30,82 @@ ENVIRONMENTS = {
     "staging-ibkr": {
         "port": 8776,
         "tier": "staging",
-        "schedule": {"weekdays": [0, 1, 2, 3, 4], "start": "09:00", "end": "22:30", "tz": "Europe/Berlin"},
     },
     "staging-hl": {
         "port": 8777,
         "tier": "staging",
-        "schedule": None,  # 24/7
         "monitoring": False,  # Hyperliquid testnet — no actionable alerts
     },
     "real-ibkr": {
         "port": 8767,
         "tier": "production",
-        "schedule": {"weekdays": [0, 1, 2, 3, 4], "start": "13:00", "end": "22:00", "tz": "Europe/Berlin"},
         "unrealized_threshold": -5000,
     },
     "real2-ibkr": {
         "port": 8768,
         "tier": "production",
-        "schedule": {"weekdays": [0, 1, 2, 3, 4], "start": "13:00", "end": "22:00", "tz": "Europe/Berlin"},
         "unrealized_threshold": -1000,
     },
 }
+
+
+# Trading-Hours sind NICHT hier hartkodiert — single source of truth ist die
+# Fuchs-Config. Eule liest sie bei Bedarf aus den JSON-Files.
+_FUCHS_CONFIG_PATHS = {
+    "production": "fuchs-config.production.json",
+    "staging": "fuchs-config.staging.json",
+}
+
+
+def _fuchs_config_path(env_name: str) -> Path:
+    """Return path to the Fuchs config file responsible for env_name.
+
+    Override via EULE_HASE_DIR; sonst ~/staging fuer staging-* und ~/hase
+    fuer real-*.
+    """
+    override = os.environ.get("EULE_HASE_DIR")
+    if override:
+        base = Path(override)
+    elif env_name.startswith("staging"):
+        base = Path.home() / "staging"
+    else:
+        base = Path.home() / "hase"
+    filename = _FUCHS_CONFIG_PATHS["staging" if env_name.startswith("staging") else "production"]
+    return base / filename
+
+
+def load_trading_hours(env_name: str) -> dict | None:
+    """Lese trading_hours aus der Fuchs-Config fuer dieses Environment.
+
+    Reihenfolge: per-environment override (`environments[env].trading_hours`)
+    → Supervisor-Default (`supervisor.trading_hours`) → None (= 24/7).
+
+    Wird die Config nicht gefunden (z.B. auf dem Dev-Rechner), wird None
+    zurueckgegeben — dann pruefen wir 24/7. Auf systematic existieren die
+    Files immer.
+
+    Format passt zu is_trading_time / is_in_startup_or_shutdown_window:
+    {"weekdays": [...], "start": "HH:MM", "end": "HH:MM", "tz": "..."}.
+    """
+    import json
+
+    path = _fuchs_config_path(env_name)
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        return None
+
+    env_cfg = cfg.get("environments", {}).get(env_name, {})
+    th = env_cfg.get("trading_hours") or cfg.get("supervisor", {}).get("trading_hours")
+    if not th:
+        return None
+    return {
+        "weekdays": th.get("weekdays", [0, 1, 2, 3, 4]),
+        "start": th["start"],
+        "end": th["end"],
+        "tz": th.get("timezone", "Europe/Berlin"),
+    }
 
 # Daily summary windows (Berlin time for IBKR, UTC for HL).
 # Hase writes the daily-summary JSON files at 22:30 Berlin (after mark-to-market).
@@ -85,6 +140,46 @@ def is_trading_time(schedule: dict | None) -> bool:
     start = time.fromisoformat(schedule["start"])
     end = time.fromisoformat(schedule["end"])
     return start <= now.time() <= end
+
+
+# Grace-Window: Hase braucht ~15-20s zum Hochfahren plus ~1min Init.
+# In dieser Zeit sind APIs nicht / nur teilweise erreichbar — ein Precheck
+# in dem Fenster ist sinnlos und wuerde nur False-Positives erzeugen.
+STARTUP_SHUTDOWN_GRACE_SECONDS = 120
+
+
+def is_in_startup_or_shutdown_window(
+    schedule: dict | None,
+    grace_seconds: int = STARTUP_SHUTDOWN_GRACE_SECONDS,
+    now: datetime | None = None,
+) -> bool:
+    """True wenn wir innerhalb `grace_seconds` nach Start oder vor Ende liegen.
+
+    Waehrend dieses Fensters faehrt Fuchs den Hase-Prozess hoch bzw. Hase
+    macht Mark-to-Market und beendet sich — APIs sind nicht / nur teilweise
+    erreichbar. Precheck soll dort schweigen.
+    """
+    if schedule is None:
+        return False
+    tz = ZoneInfo(schedule["tz"])
+    if now is None:
+        now = datetime.now(tz)
+    else:
+        now = now.astimezone(tz)
+    if now.weekday() not in schedule["weekdays"]:
+        return False
+    start = time.fromisoformat(schedule["start"])
+    end = time.fromisoformat(schedule["end"])
+    today = now.date()
+    start_dt = datetime.combine(today, start, tzinfo=tz)
+    end_dt = datetime.combine(today, end, tzinfo=tz)
+    delta_after_start = (now - start_dt).total_seconds()
+    delta_before_end = (end_dt - now).total_seconds()
+    if 0 <= delta_after_start < grace_seconds:
+        return True
+    if 0 <= delta_before_end < grace_seconds:
+        return True
+    return False
 
 
 def is_daily_summary_time() -> bool:
@@ -273,7 +368,13 @@ def check_environment(env_name: str, env_config: dict, baselines: dict) -> list[
     if not env_config.get("monitoring", True):
         return []  # Monitoring disabled for this environment
 
-    if not is_trading_time(env_config["schedule"]):
+    schedule = load_trading_hours(env_name)
+    if not is_trading_time(schedule):
+        return []
+
+    # Waehrend Start- bzw. Stop-Fenster (~2 min) ist die API nicht / nur
+    # teilweise erreichbar. Pruefen ist dort sinnlos.
+    if is_in_startup_or_shutdown_window(schedule):
         return []
 
     # 1. Health check
@@ -297,6 +398,23 @@ def check_environment(env_name: str, env_config: dict, baselines: dict) -> list[
         return anomalies
 
     now = datetime.now(ZoneInfo("UTC"))
+
+    # 0DTE-Invariante: nach 16:00 ET MUSS FSM=FLAT sein (Optionen abgelaufen).
+    # Trifft alle Strategien mit "0dte" im Namen, die heute aktiv sind.
+    now_et = now.astimezone(ZoneInfo("US/Eastern"))
+    if now_et.hour >= 16:
+        for s in strategies:
+            sname = s.get("name", "")
+            if not _is_0dte_strategy(sname):
+                continue
+            if not s.get("is_active_today", False):
+                continue
+            sfsm = s.get("display", {}).get("fsm_state", "?")
+            if sfsm != "FLAT":
+                anomalies.append((
+                    "CRITICAL",
+                    f"[{env_name}/{sname}] 0DTE post-16:00 ET, FSM={sfsm} (must be FLAT)",
+                ))
 
     # Build lookup by strategy name
     strat_by_name = {}
@@ -511,6 +629,168 @@ def check_environment(env_name: str, env_config: dict, baselines: dict) -> list[
     return anomalies
 
 
+_WEEKDAYS_DE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+
+
+def _is_0dte_strategy(name: str) -> bool:
+    """Erkennen anhand des Namens — alle 0DTE-Strategien haben 0dte im Namen."""
+    return "0dte" in name.lower()
+
+
+def _strategy_status_note(strat: dict, now: datetime) -> str:
+    """Annotation fuer Strategie-Status — erklaert FLAT-Erwartungen.
+
+    Liefert leeren String wenn keine Erklaerung noetig.
+    """
+    fsm = strat.get("display", {}).get("fsm_state", "?")
+    name = strat.get("name", "")
+    is_active_today = strat.get("is_active_today", True)
+
+    if not is_active_today:
+        return "nicht aktiv heute"
+
+    if _is_0dte_strategy(name):
+        et = ZoneInfo("US/Eastern")
+        now_et = now.astimezone(et)
+        if now_et.hour >= 16 and fsm != "FLAT":
+            return f"⚠ 0DTE post-16:00 ET, FSM={fsm} (sollte FLAT sein)"
+
+    return ""
+
+
+def _format_duration(seconds: float) -> str:
+    """Format seconds as human-readable duration (e.g. '5h 23min', '47min')."""
+    total_min = int(seconds // 60)
+    if total_min < 60:
+        return f"{total_min}min"
+    hours = total_min // 60
+    minutes = total_min % 60
+    return f"{hours}h {minutes}min"
+
+
+def env_status_header() -> str:
+    """Build header lines describing current time and per-env trading-hours status.
+
+    This is data, not domain knowledge — Claude shouldn't have to re-derive it.
+    Quelle der Trading-Hours: Fuchs-Configs (siehe load_trading_hours).
+    """
+    tz = ZoneInfo("Europe/Berlin")
+    now = datetime.now(tz)
+    weekday_de = _WEEKDAYS_DE[now.weekday()]
+    time_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    lines = [
+        f"Time: {time_str} {weekday_de} (Europe/Berlin)",
+        "Environments (Trading-Hours aus fuchs-config):",
+    ]
+
+    for env_name, env_config in ENVIRONMENTS.items():
+        port = env_config["port"]
+        schedule = load_trading_hours(env_name)
+
+        if schedule is None:
+            hours_str = "24/7"
+            state = "ACTIVE"
+        else:
+            wd = schedule["weekdays"]
+            if wd == [0, 1, 2, 3, 4]:
+                wd_str = "Mo-Fr"
+            elif wd == [0, 1, 2, 3, 4, 5, 6]:
+                wd_str = "7d"
+            else:
+                wd_str = ",".join(_WEEKDAYS_DE[d][:2] for d in wd)
+            hours_str = f"{schedule['start']}-{schedule['end']} {wd_str}"
+
+            sched_tz = ZoneInfo(schedule["tz"])
+            now_local = now.astimezone(sched_tz)
+            start = time.fromisoformat(schedule["start"])
+            end = time.fromisoformat(schedule["end"])
+            today = now_local.date()
+            start_dt = datetime.combine(today, start, tzinfo=sched_tz)
+            end_dt = datetime.combine(today, end, tzinfo=sched_tz)
+
+            if now_local.weekday() not in wd:
+                state = "INACTIVE (kein Werktag)"
+            elif now_local < start_dt:
+                state = f"INACTIVE (Start in {_format_duration((start_dt - now_local).total_seconds())})"
+            elif now_local > end_dt:
+                state = "INACTIVE (Tagesende erreicht)"
+            else:
+                # active — check startup/shutdown grace
+                after_start = (now_local - start_dt).total_seconds()
+                before_end = (end_dt - now_local).total_seconds()
+                if 0 <= after_start < STARTUP_SHUTDOWN_GRACE_SECONDS:
+                    state = f"STARTUP ({_format_duration(after_start)} seit Start)"
+                elif 0 <= before_end < STARTUP_SHUTDOWN_GRACE_SECONDS:
+                    state = f"SHUTDOWN ({_format_duration(before_end)} bis Tagesende)"
+                else:
+                    state = f"ACTIVE (seit {schedule['start']}, {_format_duration(after_start)})"
+
+        if not env_config.get("monitoring", True):
+            state += " [monitoring disabled]"
+        lines.append(f"  {env_name:14s} :{port}  {hours_str:21s}  {state}")
+
+    return "\n".join(lines)
+
+
+def env_data_block(now: datetime | None = None) -> str:
+    """Live-Status pro ACTIVE Environment (Cash/Equity/PnL + Strategien).
+
+    Holt /strategies + /portfolio fuer jedes monitoring-aktive Env, das
+    aktuell ACTIVE ist (nicht in Startup/Shutdown-Fenster). Inaktive Envs
+    werden nicht angezeigt — der Header zeigt sie ohnehin als INACTIVE.
+    """
+    if now is None:
+        now = datetime.now(ZoneInfo("Europe/Berlin"))
+
+    blocks: list[str] = []
+    for env_name, env_config in ENVIRONMENTS.items():
+        if not env_config.get("monitoring", True):
+            continue
+        schedule = load_trading_hours(env_name)
+        if not is_trading_time(schedule):
+            continue
+        if is_in_startup_or_shutdown_window(schedule):
+            continue
+
+        port = env_config["port"]
+        strategies = api_get(port, "/strategies")
+        portfolio = api_get(port, "/portfolio")
+
+        if strategies is None or portfolio is None:
+            blocks.append(f"  [{env_name}] API nicht erreichbar (siehe Anomalien)")
+            continue
+
+        cash_info = portfolio.get("cash", {}) or {}
+        cash = cash_info.get("current_cash", 0)
+        currency = cash_info.get("currency", "USD")
+        pnl_info = portfolio.get("pnl", {}) or {}
+        d_realized = pnl_info.get("daily_realized_pnl", 0)
+        d_unrealized = pnl_info.get("daily_unrealized_pnl", 0)
+        equity = portfolio.get("equity_check", {}).get("internal_equity", 0)
+
+        env_lines = [
+            f"  [{env_name}] Cash {currency} {cash:,.2f}  Equity {equity:,.2f}  "
+            f"Daily PnL realized {d_realized:+,.2f}  unrealized {d_unrealized:+,.2f}"
+        ]
+        for s in strategies:
+            name = s.get("name", "?")
+            fsm = s.get("display", {}).get("fsm_state", "?")
+            stats = s.get("stats", {}) or {}
+            rpnl = stats.get("realized_pnl", 0) or 0
+            upnl = stats.get("unrealized_pnl", 0) or 0
+            note = _strategy_status_note(s, now)
+            note_str = f"  — {note}" if note else ""
+            env_lines.append(
+                f"    {name:32s}  {fsm:14s}  rPnL {rpnl:+8.2f}  uPnL {upnl:+8.2f}{note_str}"
+            )
+        blocks.append("\n".join(env_lines))
+
+    if not blocks:
+        return ""
+    return "Live status (FSM, PnL, Cash):\n" + "\n\n".join(blocks)
+
+
 def run_precheck(force_summary: bool = False) -> tuple[int, str]:
     """
     Run full precheck across all environments.
@@ -518,6 +798,10 @@ def run_precheck(force_summary: bool = False) -> tuple[int, str]:
     """
     baselines = load_baselines()
     all_anomalies = []
+    header = env_status_header()
+    data_block = env_data_block()
+    if data_block:
+        header = header + "\n\n" + data_block
 
     for env_name, env_config in ENVIRONMENTS.items():
         anomalies = check_environment(env_name, env_config, baselines)
@@ -577,8 +861,8 @@ def run_precheck(force_summary: bool = False) -> tuple[int, str]:
             if all_anomalies:
                 anomaly_lines = [f"  [{sev}] {msg}" for sev, msg in all_anomalies]
                 output = "ANOMALIES DETECTED:\n" + "\n".join(anomaly_lines) + "\n\n" + output
-                return 1, output
-            return 2, output
+                return 1, header + "\n\n" + output
+            return 2, header + "\n\n" + output
 
         # Build summary from JSON files
         lines = ["DAILY SUMMARY:"]
@@ -609,8 +893,8 @@ def run_precheck(force_summary: bool = False) -> tuple[int, str]:
         if all_anomalies:
             anomaly_lines = [f"  [{sev}] {msg}" for sev, msg in all_anomalies]
             output = "ANOMALIES DETECTED:\n" + "\n".join(anomaly_lines) + "\n\n" + output
-            return 1, output
-        return 2, output
+            return 1, header + "\n\n" + output
+        return 2, header + "\n\n" + output
 
     if all_anomalies:
         # Deduplicate: only alert on NEW anomalies not seen in the last run
@@ -642,14 +926,14 @@ def run_precheck(force_summary: bool = False) -> tuple[int, str]:
         new_hashes = current_hashes - previous_hashes
         if not new_hashes:
             # Same anomalies as last run — suppress to avoid spam
-            return 0, "OK — Known anomalies still present (suppressed)"
+            return 0, header + "\n\nOK — Known anomalies still present (suppressed)"
 
         lines = ["ANOMALIES DETECTED:"]
         for sev, msg in all_anomalies:
             h = hashlib.md5(f"{sev}:{msg}".encode()).hexdigest()[:12]
             marker = " [NEW]" if h in new_hashes else " [KNOWN]"
             lines.append(f"  [{sev}] {msg}{marker}")
-        return 1, "\n".join(lines)
+        return 1, header + "\n\n" + "\n".join(lines)
 
     # Clear state file when no anomalies
     try:
@@ -659,7 +943,7 @@ def run_precheck(force_summary: bool = False) -> tuple[int, str]:
     except Exception:
         pass
 
-    return 0, "OK — All checks passed"
+    return 0, header + "\n\nOK — All checks passed"
 
 
 def main():
