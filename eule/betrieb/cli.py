@@ -121,7 +121,9 @@ def precheck(
     if format == "json":
         output_json({"exit_code": exit_code, "output": output})
     else:
-        console.print(output)
+        # markup=False: precheck-Output enthaelt [env_name]-Tags die Rich
+        # sonst als Markup interpretiert und verschluckt.
+        console.print(output, markup=False)
     raise typer.Exit(exit_code)
 
 
