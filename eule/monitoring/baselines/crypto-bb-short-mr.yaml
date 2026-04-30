@@ -3,6 +3,8 @@ strategy_class: quanta.klein_see.strategy.CryptoBBShortMR
 dachs_project: klein-see
 environments: [staging-hl]
 
+character: "Regime-Gate: nur aktiv bei BTC Vol >= P75; FLAT bei Kill-Switch oder niedriger Vol"
+
 entry:
   weekdays: [0, 1, 2, 3, 4, 5, 6]
   time: "00:00"

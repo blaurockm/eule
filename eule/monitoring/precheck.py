@@ -733,15 +733,21 @@ def env_status_header() -> str:
     return "\n".join(lines)
 
 
-def env_data_block(now: datetime | None = None) -> str:
+def env_data_block(now: datetime | None = None, baselines: dict | None = None) -> str:
     """Live-Status pro ACTIVE Environment (Cash/Equity/PnL + Strategien).
 
     Holt /strategies + /portfolio fuer jedes monitoring-aktive Env, das
     aktuell ACTIVE ist (nicht in Startup/Shutdown-Fenster). Inaktive Envs
     werden nicht angezeigt — der Header zeigt sie ohnehin als INACTIVE.
+
+    Falls baselines uebergeben werden, wird pro Strategie das `character`-
+    Feld als zweite Zeile angehaengt (Domaenen-Wissen aus dem Baseline-File,
+    nicht aus dem Agent-Prompt).
     """
     if now is None:
         now = datetime.now(ZoneInfo("Europe/Berlin"))
+    if baselines is None:
+        baselines = load_baselines()
 
     blocks: list[str] = []
     for env_name, env_config in ENVIRONMENTS.items():
@@ -784,6 +790,9 @@ def env_data_block(now: datetime | None = None) -> str:
             env_lines.append(
                 f"    {name:32s}  {fsm:14s}  rPnL {rpnl:+8.2f}  uPnL {upnl:+8.2f}{note_str}"
             )
+            character = (baselines.get(name) or {}).get("character")
+            if character:
+                env_lines.append(f"        Char: {character}")
         blocks.append("\n".join(env_lines))
 
     if not blocks:
@@ -799,7 +808,7 @@ def run_precheck(force_summary: bool = False) -> tuple[int, str]:
     baselines = load_baselines()
     all_anomalies = []
     header = env_status_header()
-    data_block = env_data_block()
+    data_block = env_data_block(baselines=baselines)
     if data_block:
         header = header + "\n\n" + data_block
 

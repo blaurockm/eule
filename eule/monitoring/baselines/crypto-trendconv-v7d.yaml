@@ -3,6 +3,8 @@ strategy_class: quanta.schnell_wolf.strategy.CryptoTrendConv
 dachs_project: schnell-wolf
 environments: [staging-hl]
 
+character: "Regime-Gate: nur aktiv bei BTC Vol < P75; FLAT bei Kill-Switch oder hoher Vol"
+
 entry:
   weekdays: [0, 1, 2, 3, 4, 5, 6]
   time: "00:00"

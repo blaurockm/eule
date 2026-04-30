@@ -3,6 +3,8 @@ strategy_class: quanta.scalp.strategy.MRstrat
 dachs_project: weich-otter
 environments: [staging-ibkr]
 
+character: "80% Stop-Loss-Exits, WR 38.7%, PF 1.26 — strukturell normal"
+
 entry:
   weekdays: [0, 1, 2, 3, 4]
   time: "09:15"

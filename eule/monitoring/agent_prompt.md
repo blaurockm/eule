@@ -141,27 +141,25 @@ curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" 
 - **WARNING**: Staging-Abweichungen, unerwartete FSM-States, niedrige Aktivitaet
 - **INFO**: Nur loggen, kein Alert
 
-## Strategie-Kontext (WICHTIG)
+## Strategie-Kontext
 
-Aktiver Status pro Strategie (FSM, PnL, "nicht aktiv heute") steht im
-"Live status"-Block des Precheck-Outputs — Claude soll DEN lesen und
+Pro Strategie steht der Live-Status (FSM, PnL, "nicht aktiv heute") und
+das Charakter-Profil (`Char: ...` Zeile, aus dem zugehoerigen Baseline-
+File) im "Live status"-Block des Precheck-Outputs. Diesen Block lesen,
 NICHT raten.
 
-Was der Precheck-Output **nicht** abdeckt (Domaenen-Wissen, das hier
-explizit bleibt):
+Wenn eine Strategie ein `Char:`-Hinweis hat (z.B. "FLAT-Wochen normal"),
+dann ist der dort beschriebene Zustand erwartet — kein Alarm.
 
-- **mcl-rsi-opencompare**: Tradet nur 6-7x/JAHR. FLAT fuer Wochen ist voellig normal.
-  Nur alertieren wenn Worker dead oder Error-State.
-- **carver-scalping**: 80% der Exits sind Stop-Losses. Das ist STRUKTURELL NORMAL
-  (kein Alarm). WR 38.7% ist erwartet. Profit Factor > 1.2 macht es profitabel.
-- **crypto-Strategien**: FLAT wenn BTC Kill-Switch aktiv. Regime-abhaengig.
-  crypto-trendconv: nur bei BTC Vol < P75. crypto-bb-short: nur bei Vol >= P75.
-- **0DTE IN_POSITION nach Entry**: Hurst-Filter kann Entry blocken,
-  also ist auch FLAT nach Entry-Zeit OK.
+Aenderungen am Charakter-Profil **immer** im Baseline-YAML
+(`eule/monitoring/baselines/{strategy}.yaml`, Feld `character`)
+vornehmen, NIEMALS hier im Agent-Prompt duplizieren — sonst entstehen
+Zombies wie der frueher hier dokumentierte Hurst-Filter, der laengst
+weg war.
 
-(Die Wochentags-Pflicht der 0DTE-Strategien und die "post-16:00 ET muss FLAT"-Regel
-werden vom Precheck automatisch gepruef und im Output annotiert — kein
-manuelles Re-Checken noetig.)
+Die Wochentags-Pflicht der 0DTE-Strategien und die "post-16:00 ET muss
+FLAT"-Regel werden vom Precheck automatisch geprueft und im Output
+annotiert — kein manuelles Re-Checken noetig.
 
 ## Hamster Data Pipeline
 

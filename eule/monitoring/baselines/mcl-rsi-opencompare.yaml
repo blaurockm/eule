@@ -3,6 +3,8 @@ strategy_class: quanta.gelb_donner.strategy.CLRsiOpenCompare
 dachs_project: gelb-donner
 environments: [staging-ibkr]
 
+character: "6-7 Trades/Jahr (FLAT-Wochen sind normal — alarmieren nur bei Worker dead oder Error)"
+
 entry:
   weekdays: [0, 1, 2, 3, 4]
   time: "17:05"
