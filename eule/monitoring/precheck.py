@@ -399,22 +399,36 @@ def check_environment(env_name: str, env_config: dict, baselines: dict) -> list[
 
     now = datetime.now(ZoneInfo("UTC"))
 
-    # 0DTE-Invariante: nach 16:00 ET MUSS FSM=FLAT sein (Optionen abgelaufen).
-    # Trifft alle Strategien mit "0dte" im Namen, die heute aktiv sind.
-    now_et = now.astimezone(ZoneInfo("US/Eastern"))
-    if now_et.hour >= 16:
-        for s in strategies:
-            sname = s.get("name", "")
-            if not _is_0dte_strategy(sname):
-                continue
-            if not s.get("is_active_today", False):
-                continue
-            sfsm = s.get("display", {}).get("fsm_state", "?")
-            if sfsm != "FLAT":
-                anomalies.append((
-                    "CRITICAL",
-                    f"[{env_name}/{sname}] 0DTE post-16:00 ET, FSM={sfsm} (must be FLAT)",
-                ))
+    # Universe once: resolves per-strategy market close (universe_keys -> close)
+    # and the broker_id-keyed exchange hours used by the staleness check below.
+    # Single source: /debug/universe.
+    universe = api_get(port, "/debug/universe")
+    universe_by_key = {}
+    exchange_hours = {}
+    options_broker_ids = set()
+    if universe and "symbols" in universe:
+        for sym in universe["symbols"]:
+            has_hours = sym.get("market_close") and sym.get("exchange_timezone")
+            key = sym.get("key")
+            bid = sym.get("broker_id")
+            if key and has_hours:
+                universe_by_key[key] = {
+                    "market_close": time.fromisoformat(sym["market_close"]),
+                    "tz": sym["exchange_timezone"],
+                }
+            if bid and has_hours and sym.get("market_open"):
+                exchange_hours[bid] = {
+                    "market_open": time.fromisoformat(sym["market_open"]),
+                    "market_close": time.fromisoformat(sym["market_close"]),
+                    "tz": sym["exchange_timezone"],
+                }
+            if sym.get("type") == "Options" and bid:
+                options_broker_ids.add(bid)
+
+    # 0DTE expiry is no longer asserted live: a cash-settled 0DTE spread stays
+    # IN_POSITION after its market close (no CLOSE order — it expires worthless)
+    # until Hase's end_of_day routine resolves it. Resolution is validated from
+    # the EOD JSON in check_eod_json(), not from the live FSM.
 
     # Build lookup by strategy name
     strat_by_name = {}
@@ -476,10 +490,15 @@ def check_environment(env_name: str, env_config: dict, baselines: dict) -> list[
         if valid_states and fsm_state not in valid_states:
             anomalies.append((severity, f"{prefix} Invalid FSM state: {fsm_state} (valid: {valid_states})"))
 
-        # FSM expectations (time-dependent, OR-union over active conditions)
-        msg = evaluate_fsm_expectations(fsm_config.get("expectations", []), fsm_state, now)
-        if msg:
-            anomalies.append(("WARNING", f"{prefix} {msg}"))
+        # FSM expectations are a LIVE assertion of the state a strategy should be
+        # in — valid only while its market is open. After the strategy's market
+        # close the position is settling (0DTE expires worthless, no CLOSE order);
+        # resolution is then validated from the EOD JSON (check_eod_json), not live.
+        close_utc = _strategy_market_close_utc(strat, universe_by_key, now)
+        if close_utc is None or now < close_utc:
+            msg = evaluate_fsm_expectations(fsm_config.get("expectations", []), fsm_state, now)
+            if msg:
+                anomalies.append(("WARNING", f"{prefix} {msg}"))
 
         # Daily loss check
         stats = strat.get("stats", {})
@@ -488,32 +507,13 @@ def check_environment(env_name: str, env_config: dict, baselines: dict) -> list[
         if max_loss is not None and realized_pnl < max_loss:
             anomalies.append((severity, f"{prefix} Daily loss: ${realized_pnl:.2f} < ${max_loss:.2f}"))
 
-    # 3. Broker data staleness check (via /debug/cache + /debug/universe for trading hours)
+    # 3. Broker data staleness check (uses the prefetched universe hours above:
+    #    exchange_hours keyed by broker_id, options_broker_ids to skip).
     cache = api_get(port, "/debug/cache")
     if cache and "cache_entries" in cache:
         STALENESS_THRESHOLD = 30 * 60  # 30 minutes in seconds
-
-        # Build exchange hours lookup from universe (broker_id → {market_open, market_close, tz})
-        exchange_hours = {}
-        universe = api_get(port, "/debug/universe")
-        if universe and "symbols" in universe:
-            for sym in universe["symbols"]:
-                bid = sym.get("broker_id")
-                if bid and sym.get("market_close") and sym.get("exchange_timezone"):
-                    exchange_hours[bid] = {
-                        "market_open": time.fromisoformat(sym["market_open"]),
-                        "market_close": time.fromisoformat(sym["market_close"]),
-                        "tz": sym["exchange_timezone"],
-                    }
-
         # Only check intraday frequencies — daily bars are naturally stale during the day
         INTRADAY_FREQS = {"1min", "5min", "15min", "30min", "1h"}
-        # Build set of Options instrument broker_ids to skip (0DTE cache is not continuously updated)
-        options_broker_ids = set()
-        if universe and "symbols" in universe:
-            for sym in universe["symbols"]:
-                if sym.get("type") == "Options" and sym.get("broker_id"):
-                    options_broker_ids.add(sym["broker_id"])
         for entry in cache["cache_entries"]:
             freq = entry.get("freq", "")
             if freq and freq not in INTRADAY_FREQS:
@@ -637,23 +637,93 @@ def _is_0dte_strategy(name: str) -> bool:
     return "0dte" in name.lower()
 
 
-def _strategy_status_note(strat: dict, now: datetime) -> str:
-    """Annotation fuer Strategie-Status — erklaert FLAT-Erwartungen.
+# A 0DTE strategy must be flat once Hase's end_of_day routine has run: the option
+# expired and the position settled. Anything else in the EOD JSON is a real anomaly.
+_EOD_RESOLVED_0DTE_STATES = {"FLAT"}
 
+
+def _strategy_market_close_utc(
+    strat: dict, universe_by_key: dict, now: datetime
+) -> datetime | None:
+    """Latest market close (UTC, today) across the strategy's traded instruments.
+
+    Resolves the strategy's ``universe_keys`` against the prefetched
+    ``/debug/universe`` hours. Returns None when no key resolves — callers then
+    keep the live FSM check as a safe fallback (status quo before close).
+    """
+    closes = []
+    for k in strat.get("universe_keys") or []:
+        u = universe_by_key.get(k)
+        if not u:
+            continue
+        tzinfo = ZoneInfo(u["tz"])
+        today_local = now.astimezone(tzinfo).date()
+        close_dt = datetime.combine(today_local, u["market_close"], tzinfo=tzinfo)
+        closes.append(close_dt.astimezone(ZoneInfo("UTC")))
+    return max(closes) if closes else None
+
+
+def _eod_summary_path(env_name: str, today_str: str) -> Path | None:
+    """Path to today's end_of_day daily-summary JSON for an env, if it exists."""
+    hase_override = os.environ.get("EULE_HASE_DIR")
+    production_dir = Path(hase_override) if hase_override else Path.home() / "hase"
+    candidates = [
+        Path.home() / "staging" / "werkstatt" / "logs" / f"daily-summary-{env_name}-{today_str}.json",
+        production_dir / "werkstatt" / "logs" / f"daily-summary-{env_name}-{today_str}.json",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def check_eod_json(env_name: str, env_config: dict) -> list[tuple[str, str]]:
+    """Phase 3: validate the end_of_day JSON once Hase has written it.
+
+    Independent of the live API and of trading hours — works after the runtime
+    has shut down. Confirms every 0DTE strategy resolved to FLAT at end of day.
+    A 0DTE strategy still IN_POSITION in the JSON means the EOD routine did not
+    resolve it (no expiry/settlement booked) — a genuine anomaly worth alerting.
+
+    Before the JSON exists (the post-close / pre-EOD gap) this returns nothing:
+    no EOD assertion is made until the JSON is there. 1DTE strategies legitimately
+    hold overnight and are excluded by _is_0dte_strategy ("1dte" != "0dte").
+    """
+    import json
+
+    if not env_config.get("monitoring", True):
+        return []
+
+    today_str = datetime.now(ZoneInfo("Europe/Berlin")).strftime("%Y-%m-%d")
+    path = _eod_summary_path(env_name, today_str)
+    if path is None:
+        return []  # Gap: EOD JSON not written yet → stay quiet
+
+    severity = "CRITICAL" if env_config["tier"] == "production" else "WARNING"
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return [(severity, f"[{env_name}] EOD-JSON nicht lesbar: {path.name}")]
+
+    anomalies = []
+    for name, fsm in data.get("fsm_states", {}).items():
+        if _is_0dte_strategy(name) and fsm not in _EOD_RESOLVED_0DTE_STATES:
+            anomalies.append((
+                severity,
+                f"[{env_name}/{name}] EOD nicht aufgeloest: FSM={fsm} im JSON (erwartet FLAT)",
+            ))
+    return anomalies
+
+
+def _strategy_status_note(strat: dict, now: datetime) -> str:
+    """Annotation fuer Strategie-Status.
+
+    0DTE-Auflaesung nach Boersenschluss wird nicht mehr live bewertet (siehe
+    check_eod_json) — hier bleibt nur der Hinweis fuer heute inaktive Strategien.
     Liefert leeren String wenn keine Erklaerung noetig.
     """
-    fsm = strat.get("display", {}).get("fsm_state", "?")
-    name = strat.get("name", "")
-    is_active_today = strat.get("is_active_today", True)
-
-    if not is_active_today:
+    if not strat.get("is_active_today", True):
         return "nicht aktiv heute"
-
-    if _is_0dte_strategy(name):
-        et = ZoneInfo("US/Eastern")
-        now_et = now.astimezone(et)
-        if now_et.hour >= 16 and fsm != "FLAT":
-            return f"⚠ 0DTE post-16:00 ET, FSM={fsm} (sollte FLAT sein)"
 
     return ""
 
@@ -813,8 +883,10 @@ def run_precheck(force_summary: bool = False) -> tuple[int, str]:
         header = header + "\n\n" + data_block
 
     for env_name, env_config in ENVIRONMENTS.items():
-        anomalies = check_environment(env_name, env_config, baselines)
-        all_anomalies.extend(anomalies)
+        # Live checks (gated by trading hours) + EOD-JSON validation (works after
+        # the runtime has shut down, hence outside the trading-hours gate).
+        all_anomalies.extend(check_environment(env_name, env_config, baselines))
+        all_anomalies.extend(check_eod_json(env_name, env_config))
 
     if force_summary or is_daily_summary_time():
         import json

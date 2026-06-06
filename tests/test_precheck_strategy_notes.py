@@ -66,14 +66,14 @@ def test_0dte_active_post_16_et_flat_no_note():
     assert note == ""
 
 
-def test_0dte_active_post_16_et_not_flat_warns():
-    # 23:00 Berlin = 17:00 ET, IN_POSITION → must warn
+def test_0dte_active_post_16_et_not_flat_no_live_note():
+    # 23:00 Berlin = 17:00 ET, IN_POSITION. Post-close 0DTE state is no longer
+    # asserted live — resolution is validated from the EOD JSON (check_eod_json).
     note = _strategy_status_note(
         _strat(name="spx-0dte-always", fsm="IN_POSITION"),
         _at(2026, 4, 30, 23, 0),
     )
-    assert "0DTE post-16:00 ET" in note
-    assert "FSM=IN_POSITION" in note
+    assert note == ""
 
 
 def test_0dte_inactive_today_takes_priority():

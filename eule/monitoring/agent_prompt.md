@@ -157,9 +157,13 @@ vornehmen, NIEMALS hier im Agent-Prompt duplizieren — sonst entstehen
 Zombies wie der frueher hier dokumentierte Hurst-Filter, der laengst
 weg war.
 
-Die Wochentags-Pflicht der 0DTE-Strategien und die "post-16:00 ET muss
-FLAT"-Regel werden vom Precheck automatisch geprueft und im Output
-annotiert — kein manuelles Re-Checken noetig.
+Die Wochentags-Pflicht der 0DTE-Strategien wird vom Precheck live geprueft.
+Die EOD-Auflaesung wird NICHT mehr live bewertet: ein 0DTE-Spread bleibt nach
+Boersenschluss (cash-settled, kein CLOSE-Order, verfaellt wertlos) IN_POSITION,
+bis Hases end_of_day-Routine ihn aufloest. Erst wenn das EOD-JSON geschrieben
+ist, prueft der Precheck, ob jede 0DTE-Strategie dort FLAT ist — steht sie
+noch auf IN_POSITION, ist das "EOD nicht aufgeloest" (echte Anomalie). Im
+Fenster zwischen Boersenschluss und JSON-Write wird bewusst nichts gemeldet.
 
 ## Hamster Data Pipeline
 
