@@ -199,7 +199,11 @@ def job_daily_summary(
                 "heruntergefahren — Live-APIs werden NICHT abgefragt. "
                 "Fasse fuer jedes Environment zusammen: Cash, Equity, Daily PnL "
                 "(realized + unrealized), FSM-States der Strategien, offene "
-                "Positionen mit signifikantem PnL. Kurz und praegnant.",
+                "Positionen mit signifikantem PnL. Kurz und praegnant. "
+                "WICHTIG: Enthaelt ein Environment ein nicht-leeres 'warnings'-Feld, "
+                "liste die Warnungen am ANFANG der Zusammenfassung prominent auf. "
+                "Bei mindestens einer Warnung mit 'affects_pnl': true markiere den "
+                "Daily-PnL dieses Environments ausdruecklich als POTENZIELL UNZUVERLAESSIG.",
             )
             alert_callback(
                 f"<b>Daily Summary</b>\n\n{summary}",
