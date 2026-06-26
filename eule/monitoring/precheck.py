@@ -677,6 +677,29 @@ def _eod_summary_path(env_name: str, today_str: str) -> Path | None:
     return None
 
 
+def _eod_json_overdue(env_name: str, now: datetime) -> bool:
+    """True when today's EOD JSON should already exist but doesn't.
+
+    Distinguishes the benign post-close/pre-EOD gap from a runtime that never
+    completed its trading day. The latter writes no JSON at all — exactly the
+    failure that hid the 11.-19.06. staging outage for 8 days: a never-started
+    runtime produced no EOD JSON, and Wachtel stayed silent because the absence
+    of the file was treated as "not written yet".
+
+    Gated to the env's trading weekdays. The deadline follows the system's own
+    daily-summary window (Hase writes ~22:30 Berlin, scheduler at 22:45), so we
+    assert "overdue" from 22:59 Berlin until midnight. Market holidays are not
+    modelled (same limitation as the rest of precheck's trading-hours gating).
+    """
+    schedule = load_trading_hours(env_name)
+    weekdays = schedule["weekdays"] if schedule else [0, 1, 2, 3, 4]
+    now_berlin = now.astimezone(ZoneInfo("Europe/Berlin"))
+    if now_berlin.weekday() not in weekdays:
+        return False
+    deadline = time(DAILY_SUMMARY_IBKR["hour"], DAILY_SUMMARY_IBKR["minute_end"])  # 22:59 Berlin
+    return now_berlin.time() >= deadline
+
+
 def check_eod_json(env_name: str, env_config: dict) -> list[tuple[str, str]]:
     """Phase 3: validate the end_of_day JSON once Hase has written it.
 
@@ -685,21 +708,29 @@ def check_eod_json(env_name: str, env_config: dict) -> list[tuple[str, str]]:
     A 0DTE strategy still IN_POSITION in the JSON means the EOD routine did not
     resolve it (no expiry/settlement booked) — a genuine anomaly worth alerting.
 
-    Before the JSON exists (the post-close / pre-EOD gap) this returns nothing:
-    no EOD assertion is made until the JSON is there. 1DTE strategies legitimately
-    hold overnight and are excluded by _is_0dte_strategy ("1dte" != "0dte").
+    A missing JSON is benign only in the post-close/pre-EOD gap; once the EOD
+    deadline has passed (_eod_json_overdue) it means the runtime never completed
+    its day and gets alerted — this is the gap that hid the 11.-19.06. outage.
+    1DTE strategies legitimately hold overnight and are excluded by
+    _is_0dte_strategy ("1dte" != "0dte").
     """
     import json
 
     if not env_config.get("monitoring", True):
         return []
 
-    today_str = datetime.now(ZoneInfo("Europe/Berlin")).strftime("%Y-%m-%d")
+    now = datetime.now(ZoneInfo("Europe/Berlin"))
+    today_str = now.strftime("%Y-%m-%d")
+    severity = "CRITICAL" if env_config["tier"] == "production" else "WARNING"
     path = _eod_summary_path(env_name, today_str)
     if path is None:
-        return []  # Gap: EOD JSON not written yet → stay quiet
-
-    severity = "CRITICAL" if env_config["tier"] == "production" else "WARNING"
+        if _eod_json_overdue(env_name, now):
+            return [(
+                severity,
+                f"[{env_name}] KEIN EOD-JSON heute ({today_str}) — Runtime hat den "
+                f"Handelstag nicht abgeschlossen (nie gestartet / gecrasht?)",
+            )]
+        return []  # benign post-close/pre-EOD gap
     try:
         data = json.loads(path.read_text())
     except Exception:
