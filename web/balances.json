@@ -1,14 +1,19 @@
 {
-  "generated_at": "2026-06-18T09:17:32",
+  "generated_at": "2026-06-26T17:07:13",
   "global": {
-    "broker_total": 18679.74,
-    "giro_total": 39.15,
-    "total_pnl": 903.14,
-    "total_expenses": 2234.25,
+    "broker_total": 15302.45,
+    "giro_total": 122.49,
+    "total_pnl": -666.61,
+    "total_expenses": 3958.45,
     "total_deposits": 20050.0,
-    "cagr": -0.0341,
+    "cagr": -0.1227,
     "currency": "EUR",
     "recent_trades": [
+      {
+        "date": "2026-06-22",
+        "count": 2,
+        "pnl_eur": -1569.75
+      },
       {
         "date": "2026-06-16",
         "count": 2,
@@ -18,11 +23,6 @@
         "date": "2026-06-15",
         "count": 2,
         "pnl_eur": 227.79
-      },
-      {
-        "date": "2026-06-09",
-        "count": 2,
-        "pnl_eur": 135.14
       }
     ]
   },
@@ -30,19 +30,19 @@
     "dmhwYYmsI84GmTrGysK-nJuPtOlGCPmUQX9Yi5h4Zmo": {
       "holder_id": "A",
       "name": "Markus Blaurock",
-      "as_of": "2026-06-18",
-      "pnl_share": 541.88,
+      "as_of": "2026-06-26",
+      "pnl_share": -399.97,
       "pnl_share_pct": 0.6,
-      "expenses_share": 1117.13,
+      "expenses_share": 1979.23,
       "expenses_share_pct": 0.5
     },
     "Q-mrNa3YMHRJh1PrYQt-bPAJHcATYupYEchWp6qG3fc": {
       "holder_id": "B",
       "name": "CaH",
-      "as_of": "2026-06-18",
-      "pnl_share": 361.26,
+      "as_of": "2026-06-26",
+      "pnl_share": -266.64,
       "pnl_share_pct": 0.4,
-      "expenses_share": 1117.13,
+      "expenses_share": 1979.23,
       "expenses_share_pct": 0.5
     }
   }
