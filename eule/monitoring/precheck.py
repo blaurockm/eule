@@ -14,6 +14,7 @@ Exit codes:
 import argparse
 import math
 import os
+import shutil
 import sys
 from datetime import datetime, time
 from pathlib import Path
@@ -746,6 +747,111 @@ def check_eod_json(env_name: str, env_config: dict) -> list[tuple[str, str]]:
     return anomalies
 
 
+def check_action_times(env_name: str, env_config: dict) -> list[tuple[str, str]]:
+    """Statischer Config-Sanity-Check: action_time darf nicht NACH dem Trading-
+    Hours-Ende des Environments liegen — sonst feuert die Action nie.
+
+    Portiert aus Fuchs ``supervisor._check_action_times_vs_trading_hours``
+    (verschwindet mit Fuchs in Phase 6). Liest die Strategy-JSONs aus dem
+    ``strategies/``-Verzeichnis neben der zustaendigen Fuchs-Config und
+    vergleicht ``action_time`` (in die TH-Zeitzone konvertiert) gegen das
+    Tagesende der effektiven Trading-Hours.
+
+    Unabhaengig von den Trading-Hours (statischer Config-Fehler, jederzeit
+    relevant) — die Dedup in run_precheck verhindert Alarm-Spam. Fehlt die
+    Config (Dev-Rechner), gibt es nichts zu pruefen -> [].
+    """
+    import json
+
+    if not env_config.get("monitoring", True):
+        return []
+
+    # 24/7-Environments (kein Tagesende) koennen action_time nicht verpassen.
+    schedule = load_trading_hours(env_name)
+    if schedule is None:
+        return []
+
+    config_path = _fuchs_config_path(env_name)
+    try:
+        cfg = json.loads(config_path.read_text())
+    except (FileNotFoundError, ValueError):
+        return []
+
+    env_cfg = cfg.get("environments", {}).get(env_name, {})
+    if not env_cfg.get("enabled", True):
+        return []
+
+    strat_dir = config_path.parent / "strategies"
+    th_tz = ZoneInfo(schedule["tz"])
+    th_end = time.fromisoformat(schedule["end"])
+    th_end_min = th_end.hour * 60 + th_end.minute
+    severity = "CRITICAL" if env_config["tier"] == "production" else "WARNING"
+
+    anomalies = []
+    for strat_file in env_cfg.get("strategy_files", []):
+        strat_path = strat_dir / strat_file
+        if not strat_path.exists():
+            continue
+        try:
+            strat_config = json.loads(strat_path.read_text())
+        except ValueError:
+            continue
+
+        action_time_str = strat_config.get("action_time")
+        if not action_time_str or action_time_str == "force":
+            continue
+
+        action_tz_str = strat_config.get("action_time_tz", "US/Eastern")
+        try:
+            hh, mm = map(int, action_time_str.split(":"))
+            # Sample-Datetime (heute) nur zur Zeitzonen-Konversion — wie in Fuchs.
+            sample = datetime.now(ZoneInfo(action_tz_str)).replace(
+                hour=hh, minute=mm, second=0, microsecond=0
+            )
+            action_in_th = sample.astimezone(th_tz)
+            action_min = action_in_th.hour * 60 + action_in_th.minute
+            if action_min > th_end_min:
+                anomalies.append((
+                    severity,
+                    f"[{env_name}/{strat_file}] action_time {action_time_str} {action_tz_str} "
+                    f"= {action_in_th.strftime('%H:%M')} {schedule['tz']}, aber Trading-Hours "
+                    f"enden {schedule['end']} — Action feuert NIE",
+                ))
+        except (ValueError, KeyError):
+            continue
+
+    return anomalies
+
+
+def check_host_disk() -> list[tuple[str, str]]:
+    """Env-agnostischer Host-Disk-Watchdog (WARN 85 % / CRIT 95 % belegt).
+
+    Portiert aus Fuchs ``supervisor._check_disk_space`` (verschwindet mit Fuchs
+    in Phase 6). Laeuft auf dem Host und feuert daher AUCH wenn kein Runtime
+    laeuft — genau das 11.-19.06.-Szenario: ein voller Datentraeger loeschte das
+    staging-venv, und der Runtime startete nie wieder. Der Runtime-eigene Check
+    (`/status` runtime_health, `<1GB`) greift nur solange er laeuft.
+
+    Alarm != Aufraeumen — die Retention (logrotate) bleibt ein separater
+    Host-Task (DOCKER-ARCH.md §7).
+    """
+    try:
+        usage = shutil.disk_usage(Path.home())
+    except Exception:
+        return []
+    used_pct = usage.used / usage.total * 100.0
+    free_gb = usage.free / 1024**3
+    if used_pct >= 95.0:
+        return [(
+            "CRITICAL",
+            f"[host] Disk {used_pct:.0f}% belegt ({free_gb:.1f}GB frei) — "
+            f"voller Datentraeger killte staging 11.-19.06.",
+        )]
+    if used_pct >= 85.0:
+        return [("WARNING", f"[host] Disk {used_pct:.0f}% belegt ({free_gb:.1f}GB frei)")]
+    return []
+
+
 def _strategy_status_note(strat: dict, now: datetime) -> str:
     """Annotation fuer Strategie-Status.
 
@@ -915,9 +1021,14 @@ def run_precheck(force_summary: bool = False) -> tuple[int, str]:
 
     for env_name, env_config in ENVIRONMENTS.items():
         # Live checks (gated by trading hours) + EOD-JSON validation (works after
-        # the runtime has shut down, hence outside the trading-hours gate).
+        # the runtime has shut down, hence outside the trading-hours gate) +
+        # statischer action_time-Config-Check (ungated, jederzeit relevant).
         all_anomalies.extend(check_environment(env_name, env_config, baselines))
         all_anomalies.extend(check_eod_json(env_name, env_config))
+        all_anomalies.extend(check_action_times(env_name, env_config))
+
+    # Host-Disk-Watchdog: env-agnostisch, einmal pro Lauf (feuert auch ohne Runtime).
+    all_anomalies.extend(check_host_disk())
 
     if force_summary or is_daily_summary_time():
         import json
