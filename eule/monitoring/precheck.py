@@ -31,6 +31,8 @@ ENVIRONMENTS = {
     "staging-ibkr": {
         "port": 8776,
         "tier": "staging",
+        # staging handelt bis 23:30 und schreibt sein EOD-JSON zum Handelsende.
+        "eod_deadline": "23:45",
     },
     "staging-hl": {
         "port": 8777,
@@ -41,11 +43,14 @@ ENVIRONMENTS = {
         "port": 8767,
         "tier": "production",
         "unrealized_threshold": -5000,
+        # production handelt bis 22:00, Mark-to-Market + EOD-JSON ~22:30.
+        "eod_deadline": "22:59",
     },
     "real2-ibkr": {
         "port": 8768,
         "tier": "production",
         "unrealized_threshold": -1000,
+        "eod_deadline": "22:59",
     },
 }
 
@@ -678,7 +683,7 @@ def _eod_summary_path(env_name: str, today_str: str) -> Path | None:
     return None
 
 
-def _eod_json_overdue(env_name: str, now: datetime) -> bool:
+def _eod_json_overdue(env_name: str, env_config: dict, now: datetime) -> bool:
     """True when today's EOD JSON should already exist but doesn't.
 
     Distinguishes the benign post-close/pre-EOD gap from a runtime that never
@@ -687,17 +692,21 @@ def _eod_json_overdue(env_name: str, now: datetime) -> bool:
     runtime produced no EOD JSON, and Wachtel stayed silent because the absence
     of the file was treated as "not written yet".
 
-    Gated to the env's trading weekdays. The deadline follows the system's own
-    daily-summary window (Hase writes ~22:30 Berlin, scheduler at 22:45), so we
-    assert "overdue" from 22:59 Berlin until midnight. Market holidays are not
-    modelled (same limitation as the rest of precheck's trading-hours gating).
+    Gated to the env's trading weekdays. Die Overdue-Deadline ist PRO ENV
+    ("eod_deadline", Berlin HH:MM), weil die Envs ihr JSON zu unterschiedlichen
+    Zeiten schreiben: production ~22:30 (Mark-to-Market nach Handelsschluss),
+    staging ~23:30 (zum Handelsende). Eine globale 22:59-Deadline meldete
+    staging jeden Werktag 22:59-23:30 faelschlich als "nie gestartet / gecrasht".
+    Fehlt die Config, gilt der Default 22:59. Market holidays sind nicht
+    modelliert (gleiche Grenze wie die uebrige Trading-Hours-Gating-Logik).
     """
     schedule = load_trading_hours(env_name)
     weekdays = schedule["weekdays"] if schedule else [0, 1, 2, 3, 4]
     now_berlin = now.astimezone(ZoneInfo("Europe/Berlin"))
     if now_berlin.weekday() not in weekdays:
         return False
-    deadline = time(DAILY_SUMMARY_IBKR["hour"], DAILY_SUMMARY_IBKR["minute_end"])  # 22:59 Berlin
+    default_deadline = f"{DAILY_SUMMARY_IBKR['hour']:02d}:{DAILY_SUMMARY_IBKR['minute_end']:02d}"
+    deadline = time.fromisoformat(env_config.get("eod_deadline", default_deadline))
     return now_berlin.time() >= deadline
 
 
@@ -725,7 +734,7 @@ def check_eod_json(env_name: str, env_config: dict) -> list[tuple[str, str]]:
     severity = "CRITICAL" if env_config["tier"] == "production" else "WARNING"
     path = _eod_summary_path(env_name, today_str)
     if path is None:
-        if _eod_json_overdue(env_name, now):
+        if _eod_json_overdue(env_name, env_config, now):
             return [(
                 severity,
                 f"[{env_name}] KEIN EOD-JSON heute ({today_str}) — Runtime hat den "

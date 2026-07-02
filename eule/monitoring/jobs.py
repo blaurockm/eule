@@ -48,24 +48,20 @@ def job_precheck(
     email_callback: Callable[..., None],
     job_config: JobConfig,
 ) -> None:
-    """Periodischer Precheck — Anomalie-Erkennung mit Dedup und Claude-Analyse.
+    """Periodischer Precheck — deterministische Anomalie-Erkennung mit Dedup.
 
-    Enthaelt eigene Notification-Logik (Mute, Dedup, Claude-Analyse nur bei
-    neuen Anomalien). Die job_config.notify/on_error steuern die Kanaele,
-    aber die Entscheidung ob benachrichtigt wird, liegt hier.
+    Kein LLM: der rohe Precheck-Output ist die Meldung. Bei neuen Anomalien
+    wird der Text ins Log geschrieben (journalctl-auswertbar), per Telegram
+    geschickt und per Email versendet. Die job_config.notify/on_error steuern
+    die Kanaele, aber die Entscheidung ob benachrichtigt wird, liegt hier.
     """
     import requests
 
     from eule.monitoring.telegram_bot import (
-        _prefetch_api_data,
         _report_to_html,
         anomalies_changed,
         clear_anomaly_state,
-        get_claude_failures,
-        invoke_claude,
         is_muted,
-        record_claude_failure,
-        reset_claude_failures,
         run_precheck,
         send_email,
     )
@@ -98,41 +94,29 @@ def job_precheck(
         if anomaly_lines and anomalies_changed(anomaly_lines):
             alert_text = "\n".join(anomaly_lines)
             n = len(anomaly_lines)
+
+            # Deterministisch ins Log — so ist im journalctl exakt sichtbar, WAS
+            # gefeuert hat (frueher ging der Text nur an die KI + Telegram/Mail).
+            for line in anomaly_lines:
+                log.warning(f"ANOMALY: {line}")
+
             escaped = (
                 alert_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             )
             alert_callback(
-                f"<b>{n} Anomalie(n) erkannt:</b>\n<pre>{escaped}</pre>\n"
-                f"<i>(Analyse per Email)</i>",
+                f"<b>{n} Anomalie(n) erkannt:</b>\n<pre>{escaped}</pre>",
                 parse_mode="HTML",
             )
-            # Claude-Analyse via Email
-            if get_claude_failures() < 3:
-                try:
-                    api_context = _prefetch_api_data()
-                    full_context = (
-                        f"Precheck-Anomalien:\n{alert_text}\n\n"
-                        f"Voller Precheck:\n{output}\n\n{api_context}"
-                    )
-                    analysis = invoke_claude(
-                        full_context,
-                        "Anomalien wurden erkannt. "
-                        "ZUERST: Hole Daten per Bash (curl localhost APIs, grep in Logfiles). "
-                        "Du bist auf dem Server — nutze Bash direkt, KEIN ssh. "
-                        "DANN: Analysiere die Ursache und liefere konkrete Loesungsvorschlaege. "
-                        "Format: Kurze Diagnose pro Problem, dann konkreter Fix-Vorschlag. "
-                        "Kein Smalltalk, nur Diagnose + Aktion.",
-                    )
-                    tz = ZoneInfo("Europe/Berlin")
-                    ts = datetime.now(tz).strftime("%Y-%m-%d %H:%M")
-                    email_body = _report_to_html(
-                        f"Anomalien:\n{alert_text}\n\n---\n\nAnalyse:\n{analysis}",
-                        title=f"Wachtel Anomalie-Analyse — {ts}",
-                    )
-                    send_email(f"Wachtel: {n} Anomalie(n) — {ts}", email_body, html=True)
-                    reset_claude_failures()
-                except Exception:
-                    record_claude_failure()
+
+            # Voller deterministischer Precheck-Output per Email — keine Analyse,
+            # nur die Daten, die der User selbst auswertet.
+            tz = ZoneInfo("Europe/Berlin")
+            ts = datetime.now(tz).strftime("%Y-%m-%d %H:%M")
+            email_body = _report_to_html(
+                f"Anomalien:\n{alert_text}\n\n---\n\nVoller Precheck:\n{output}",
+                title=f"Wachtel Anomalie — {ts}",
+            )
+            send_email(f"Wachtel: {n} Anomalie(n) — {ts}", email_body, html=True)
 
     elif exit_code == 0:
         clear_anomaly_state()
@@ -143,20 +127,18 @@ def job_daily_summary(
     email_callback: Callable[..., None],
     job_config: JobConfig,
 ) -> None:
-    """Taegliche Zusammenfassung — basiert auf Hase's daily-summary-*.json Files.
+    """Taegliche Zusammenfassung — deterministisch aus Hase's daily-summary-*.json.
 
-    Hase schreibt um 22:30 Berlin (real) bzw. 23:30 (staging) ein JSON nach
-    mark-to-market und faehrt dann runter. Der Job laeuft 22:45 — die
-    Live-APIs sind dann absichtlich nicht mehr erreichbar. Datenquelle
-    sind ausschliesslich die JSON-Files.
+    Hase schreibt um ~22:30 Berlin (real) bzw. ~23:30 (staging) ein JSON nach
+    mark-to-market und faehrt dann runter. Der Job laeuft danach — die
+    Live-APIs sind dann absichtlich nicht mehr erreichbar. Datenquelle sind
+    ausschliesslich die JSON-Files.
+
+    Kein LLM: der JSON-basierte Precheck-Summary-Render ist die Zusammenfassung.
+    Datenqualitaets-Warnungen (Hase 'warnings'-Feld) werden vorangestellt.
     """
     from eule.monitoring.telegram_bot import (
         _report_to_html,
-        get_claude_failures,
-        invoke_claude,
-        markdown_to_telegram_html,
-        record_claude_failure,
-        reset_claude_failures,
         run_precheck,
         send_email,
     )
@@ -166,9 +148,6 @@ def job_daily_summary(
     tz = ZoneInfo("Europe/Berlin")
     now = datetime.now(tz)
     date_str = now.strftime("%Y-%m-%d")
-    weekdays_de = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
-    weekday_de = weekdays_de[now.weekday()]
-    date_de = f"{now.day}.{now.month}.{now.year}"
 
     # force_summary=True erzwingt den JSON-basierten Render-Pfad in precheck,
     # unabhaengig davon, ob is_daily_summary_time() gerade true ist.
@@ -178,61 +157,49 @@ def job_daily_summary(
     if not summary_jsons:
         log.warning(f"Keine daily-summary JSONs fuer {date_str} gefunden")
 
-    json_section = (
-        json.dumps(summary_jsons, indent=2, default=str)
-        if summary_jsons
-        else "(keine daily-summary JSONs gefunden — Hase hat sie nicht geschrieben)"
-    )
-    full_context = (
-        f"Daily Summary (formatiert):\n{precheck_output}\n\n"
-        f"Daily Summary JSONs (raw, mit Positionen, Stats, FSM-States):\n{json_section}"
-    )
-
-    if get_claude_failures() < 3:
-        try:
-            summary = invoke_claude(
-                full_context,
-                f"Heute ist {weekday_de}, der {date_de}. "
-                "Erstelle die taegliche Zusammenfassung (Daily Summary). "
-                "Datenquelle sind die daily-summary-*.json Files, die Hase nach "
-                "Mark-to-Market schreibt. Hase ist um diese Zeit absichtlich "
-                "heruntergefahren — Live-APIs werden NICHT abgefragt. "
-                "Fasse fuer jedes Environment zusammen: Cash, Equity, Daily PnL "
-                "(realized + unrealized), FSM-States der Strategien, offene "
-                "Positionen mit signifikantem PnL. Kurz und praegnant. "
-                "WICHTIG: Enthaelt ein Environment ein nicht-leeres 'warnings'-Feld, "
-                "liste die Warnungen am ANFANG der Zusammenfassung prominent auf. "
-                "Bei mindestens einer Warnung mit 'affects_pnl': true markiere den "
-                "Daily-PnL dieses Environments ausdruecklich als POTENZIELL UNZUVERLAESSIG.",
-            )
-            alert_callback(
-                f"<b>Daily Summary</b>\n\n{summary}",
-                parse_mode="HTML",
-            )
-            email_body = _report_to_html(summary, title=f"Wachtel Daily Summary — {date_str}")
-            send_email(f"Wachtel Daily Summary — {date_str}", email_body, html=True)
-            reset_claude_failures()
-        except Exception:
-            record_claude_failure()
-            _send_fallback(alert_callback, send_email, precheck_output, date_str)
+    warn_block = _format_data_quality_warnings(summary_jsons)
+    if warn_block:
+        log.warning(f"Daily-Summary Datenqualitaets-Warnungen:\n{warn_block}")
+        summary = f"{warn_block}\n\n{precheck_output}"
     else:
-        _send_fallback(alert_callback, send_email, precheck_output, date_str)
+        summary = precheck_output
+
+    escaped = summary.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    alert_callback(f"<b>Daily Summary</b>\n<pre>{escaped}</pre>", parse_mode="HTML")
+    email_body = _report_to_html(summary, title=f"Wachtel Daily Summary — {date_str}")
+    send_email(f"Wachtel Daily Summary — {date_str}", email_body, html=True)
 
 
-def _send_fallback(alert_callback, email_fn, precheck_output: str, date_str: str):
-    """Fallback Daily Summary ohne Claude."""
-    from eule.monitoring.telegram_bot import _report_to_html
+def _format_data_quality_warnings(summary_jsons: dict[str, dict]) -> str:
+    """Deterministisch die Hase-'warnings' pro Env formatieren.
 
-    escaped = (
-        precheck_output.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    )
-    alert_callback(
-        f"<b>Daily Summary (ohne Claude)</b>\n<pre>{escaped}</pre>",
-        parse_mode="HTML",
-    )
-    fallback_plain = f"Daily Summary (ohne Claude):\n{precheck_output}"
-    email_body = _report_to_html(fallback_plain, title=f"Wachtel Daily Summary — {date_str}")
-    email_fn(f"Wachtel Daily Summary — {date_str}", email_body, html=True)
+    Hase schreibt pro Env optional ein 'warnings'-Feld (Liste). Ist mindestens
+    eine Warnung mit affects_pnl gesetzt, wird der Daily-PnL des Envs als
+    potenziell unzuverlaessig markiert. Kein Schema-Raten: Dict-Warnungen werden
+    ueber 'message'/'msg' gerendert, sonst als JSON; alles andere per str().
+    Leere/fehlende Felder -> "".
+    """
+    lines: list[str] = []
+    for env, data in sorted(summary_jsons.items()):
+        warnings = data.get("warnings") or []
+        if not warnings:
+            continue
+        env_name = data.get("env", env)
+        affects_pnl = False
+        lines.append(f"[{env_name}] Datenqualitaets-Warnungen:")
+        for w in warnings:
+            if isinstance(w, dict):
+                msg = w.get("message") or w.get("msg") or json.dumps(w, default=str)
+                if w.get("affects_pnl"):
+                    affects_pnl = True
+            else:
+                msg = str(w)
+            lines.append(f"  - {msg}")
+        if affects_pnl:
+            lines.append(f"  => Daily-PnL fuer {env_name} POTENZIELL UNZUVERLAESSIG")
+    if not lines:
+        return ""
+    return "⚠ WARNUNGEN:\n" + "\n".join(lines)
 
 
 def job_weekly_report(

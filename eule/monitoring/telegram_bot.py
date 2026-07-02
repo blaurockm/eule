@@ -40,12 +40,9 @@ log = logging.getLogger("wachtel")
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5592934887")
 HEALTHCHECK_URL = os.environ.get("HEALTHCHECK_URL", "")
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "sonnet")
-CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "120"))
 
 MONITORING_DIR = Path(__file__).parent
 PRECHECK_SCRIPT = MONITORING_DIR / "precheck.py"
-AGENT_PROMPT = MONITORING_DIR / "agent_prompt.md"
 EULE_ROOT = MONITORING_DIR.parent.parent  # eule project root
 
 
@@ -87,10 +84,6 @@ _FUCHS_CONFIGS = {
 }
 
 # Alert dedup: only re-alert when the anomaly set changes (not on every precheck cycle)
-
-# Conversation history: keep last N exchanges for Claude context
-CONVERSATION_HISTORY_SIZE = 5
-CONVERSATION_TIMEOUT = 30 * 60  # Reset history after 30 minutes of inactivity
 
 # --- Telegram API ---
 
@@ -217,8 +210,7 @@ def _register_bot_commands():
     """Register bot commands so they appear in Telegram's '/' menu."""
     commands = [
         {"command": "status", "description": "Precheck ausfuehren"},
-        {"command": "check", "description": "Precheck + Claude-Analyse"},
-        {"command": "summary", "description": "Tages-Summary aller Envs"},
+        {"command": "summary", "description": "Tages-Summary (deterministisch)"},
         {"command": "fstatus", "description": "Fuchs Service Status"},
         {"command": "fstart", "description": "Fuchs Service starten"},
         {"command": "fstop", "description": "Fuchs Service stoppen"},
@@ -429,126 +421,6 @@ def run_precheck(force_summary: bool = False) -> tuple[int, str]:
         return 1, f"Precheck execution failed: {e}"
 
 
-# --- Conversation History ---
-
-_conversation_history: list[tuple[str, str]] = []  # [(user_msg, bot_response), ...]
-_conversation_last_time: float = 0.0
-_conversation_lock = threading.Lock()
-
-
-def add_to_history(user_msg: str, bot_response: str):
-    """Add an exchange to conversation history."""
-    with _conversation_lock:
-        global _conversation_last_time
-        _conversation_history.append((user_msg, bot_response))
-        # Keep only the last N exchanges
-        while len(_conversation_history) > CONVERSATION_HISTORY_SIZE:
-            _conversation_history.pop(0)
-        _conversation_last_time = time_module.time()
-
-
-def get_history_context() -> str:
-    """Get formatted conversation history, or empty string if stale/empty."""
-    with _conversation_lock:
-        if not _conversation_history:
-            return ""
-        # Reset history if inactive too long
-        if time_module.time() - _conversation_last_time > CONVERSATION_TIMEOUT:
-            _conversation_history.clear()
-            return ""
-        lines = ["BISHERIGER GESPRAECHSVERLAUF:"]
-        for user_msg, bot_response in _conversation_history:
-            lines.append(f"User: {user_msg}")
-            # Truncate long responses to keep prompt manageable
-            short = bot_response[:500] + "..." if len(bot_response) > 500 else bot_response
-            lines.append(f"Antwort: {short}")
-            lines.append("")
-        return "\n".join(lines)
-
-
-# --- Claude Code Invocation ---
-
-_claude_lock = threading.Lock()
-
-
-def invoke_claude(context: str, task: str) -> str:
-    """Invoke Claude Code CLI with iterative timeout.
-
-    Waits up to CLAUDE_TIMEOUT per round, sending "Claude denkt noch..."
-    status updates via Telegram between rounds. Max 5 rounds.
-
-    Returns Telegram-HTML (already through markdown_to_telegram_html) — callers
-    must NOT re-convert, sonst werden die Tags doppelt escaped und Telegram
-    zeigt sie als Literal-Text.
-    """
-    if not _claude_lock.acquire(timeout=5):
-        return "Claude is busy with another request. Try again later."
-
-    try:
-        prompt_text = AGENT_PROMPT.read_text() if AGENT_PROMPT.exists() else ""
-
-        history = get_history_context()
-        if history:
-            full_prompt = f"{prompt_text}\n\n{history}\n\nKONTEXT:\n{context}\n\nAUFGABE:\n{task}"
-        else:
-            full_prompt = f"{prompt_text}\n\nKONTEXT:\n{context}\n\nAUFGABE:\n{task}"
-
-        max_rounds = 5
-        proc = subprocess.Popen(
-            [
-                "claude",
-                "-p",
-                full_prompt,
-                "--model",
-                CLAUDE_MODEL,
-                "--max-turns",
-                "15",
-                "--allowedTools",
-                "Bash,Read,Glob,Grep",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=str(EULE_ROOT),
-            env={**os.environ, "TELEGRAM_BOT_TOKEN": BOT_TOKEN, "TELEGRAM_CHAT_ID": CHAT_ID},
-        )
-
-        for round_num in range(max_rounds):
-            try:
-                stdout, stderr = proc.communicate(timeout=CLAUDE_TIMEOUT)
-                # Process finished
-                output = stdout.strip()
-                if not output:
-                    output = stderr.strip() or "Claude returned no output"
-                output = markdown_to_telegram_html(output)
-                log.info(f"Claude finished ({len(output)} chars, round {round_num + 1})")
-                preview = output[:500] + "..." if len(output) > 500 else output
-                log.info(f"Claude response: {preview}")
-                return output
-            except subprocess.TimeoutExpired:
-                if round_num < max_rounds - 1:
-                    elapsed = (round_num + 1) * CLAUDE_TIMEOUT
-                    log.info(f"Claude still running after {elapsed}s (round {round_num + 1}/{max_rounds})")
-                    send_message(f"Claude denkt noch... ({elapsed}s)")
-                else:
-                    # Final round — kill the process
-                    log.error(f"Claude timed out after {max_rounds * CLAUDE_TIMEOUT}s, killing process")
-                    proc.kill()
-                    proc.wait()
-                    return f"Claude timed out after {max_rounds * CLAUDE_TIMEOUT}s"
-
-        # Should not reach here, but safety net
-        proc.kill()
-        proc.wait()
-        return f"Claude timed out after {max_rounds * CLAUDE_TIMEOUT}s"
-    except FileNotFoundError:
-        return "Claude CLI not found. Is it installed?"
-    except Exception as e:
-        return f"Claude invocation failed: {e}"
-    finally:
-        _claude_lock.release()
-
-
 # --- Command Handlers ---
 
 
@@ -560,32 +432,11 @@ def handle_status() -> str:
     return f"<b>[{prefix}]</b>\n<pre>{escaped}</pre>"
 
 
-def handle_check() -> str:
-    """Handle /check — run precheck + Claude analysis."""
-    exit_code, precheck_output = run_precheck()
-    claude_output = invoke_claude(
-        precheck_output,
-        "Analysiere den Precheck-Output. Pruefe die APIs direkt fuer zusaetzlichen Kontext. "
-        "Fasse zusammen: Was laeuft gut, was ist auffaellig, was erfordert Aufmerksamkeit?",
-    )
-    add_to_history("/check", f"Precheck:\n{precheck_output}\n\nAnalyse:\n{claude_output}")
-    pre_escaped = precheck_output.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return (
-        f"<b>Precheck:</b>\n<pre>{pre_escaped}</pre>\n\n"
-        f"<b>Analyse:</b>\n{claude_output}"
-    )
-
-
 def handle_summary() -> str:
-    """Handle /summary — comprehensive summary via Claude."""
-    _, precheck_output = run_precheck()
-    claude_output = invoke_claude(
-        precheck_output,
-        "Erstelle eine umfassende Daily Summary. Pruefe alle Environment-APIs (/status, /strategies, /portfolio). "
-        "Fasse zusammen: Status jeder Strategie, PnL, Anomalien, und ob alles normal laeuft.",
-    )
-    add_to_history("/summary", claude_output)
-    return claude_output
+    """Handle /summary — deterministischer Tages-Summary (JSON-basierter Render)."""
+    _, output = run_precheck(force_summary=True)
+    escaped = output.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return f"<pre>{escaped}</pre>"
 
 
 def handle_baseline(args: str) -> str:
@@ -830,13 +681,14 @@ _RUNTIME_NAMES = {
 }
 
 
-def handle_freetext(text: str) -> str:
-    """Handle free-text message — forward to Claude with full context."""
-    _, precheck_output = run_precheck()
-    context = f"Aktueller Precheck-Status:\n{precheck_output}"
-    response = invoke_claude(context, text)
-    add_to_history(text, response)
-    return response
+def handle_help() -> str:
+    """Deterministische Befehlsuebersicht (ersetzt die fruehere Freitext-KI)."""
+    return (
+        "Wachtel ist ein deterministischer Monitor (kein LLM).\n\n"
+        "<b>Monitoring:</b> /status, /summary, /report, /equity, /baseline\n"
+        "<b>Fuchs:</b> /fstatus, /fstart, /fstop, /frestart, /emergency, /flogs\n"
+        "<b>Sonstiges:</b> /mute, /unmute"
+    )
 
 
 # --- Mute Logic ---
@@ -1145,29 +997,6 @@ def clear_anomaly_state():
         _seen_anomaly_fingerprints.clear()
 
 
-# --- Claude Failure Tracking ---
-
-_claude_failures = 0
-_claude_failure_lock = threading.Lock()
-
-
-def record_claude_failure():
-    global _claude_failures
-    with _claude_failure_lock:
-        _claude_failures += 1
-
-
-def reset_claude_failures():
-    global _claude_failures
-    with _claude_failure_lock:
-        _claude_failures = 0
-
-
-def get_claude_failures() -> int:
-    with _claude_failure_lock:
-        return _claude_failures
-
-
 # --- Telegram Poller Thread ---
 
 
@@ -1206,42 +1035,6 @@ class TelegramPoller(threading.Thread):
 
     def stop(self):
         self.running = False
-
-
-# --- API Pre-Fetching ---
-
-# Environment ports (kept in sync with precheck.py)
-_API_PORTS = {
-    "staging-ibkr": 8776,
-    "staging-hl": 8777,
-    "real-ibkr": 8767,
-    "real2-ibkr": 8768,
-}
-
-
-def _prefetch_api_data() -> str:
-    """Pre-fetch /strategies and /portfolio from all Hase APIs.
-
-    Returns formatted text context so Claude doesn't need to run curl commands.
-    This saves ~60s of Claude execution time on daily summaries.
-    """
-    lines = ["API-Daten (vorab abgerufen):"]
-    for env_name, port in _API_PORTS.items():
-        lines.append(f"\n--- {env_name} (port {port}) ---")
-        for endpoint in ("/strategies", "/portfolio"):
-            try:
-                resp = requests.get(f"http://localhost:{port}{endpoint}", timeout=5)
-                if resp.status_code == 200:
-                    data = json.dumps(resp.json(), indent=2, default=str)
-                    # Truncate very large responses
-                    if len(data) > 3000:
-                        data = data[:3000] + "\n... (truncated)"
-                    lines.append(f"{endpoint}:\n{data}")
-                else:
-                    lines.append(f"{endpoint}: HTTP {resp.status_code}")
-            except Exception as e:
-                lines.append(f"{endpoint}: nicht erreichbar ({e})")
-    return "\n".join(lines)
 
 
 # --- Main Bot ---
@@ -1319,11 +1112,7 @@ def main():
             # Route commands
             if text.startswith("/status"):
                 response = handle_status()
-            elif text.startswith("/check"):
-                send_message("Analyse laeuft...")
-                response = handle_check()
             elif text.startswith("/summary"):
-                send_message("Summary wird erstellt...")
                 response = handle_summary()
             elif text.startswith("/mute"):
                 parts = text.split()
@@ -1371,16 +1160,9 @@ def main():
                 response = result
             elif text.startswith("/flogs"):
                 response = handle_flogs(text.replace("/flogs", "", 1).strip())
-            elif text.startswith("/"):
-                response = (
-                    "Unbekannter Befehl.\n\n"
-                    "<b>Monitoring:</b> /status, /check, /summary, /report, /equity, /baseline\n"
-                    "<b>Fuchs:</b> /fstatus, /fstart, /fstop, /frestart, /emergency, /flogs\n"
-                    "<b>Sonstiges:</b> /mute, /unmute"
-                )
             else:
-                send_message("Frage an Claude...")
-                response = handle_freetext(text)
+                # Jeder unbekannte Befehl UND jeder Freitext -> deterministische Hilfe.
+                response = handle_help()
 
             log.info(f"Sending response ({len(response)} chars)")
             send_message(response, parse_mode="HTML")
