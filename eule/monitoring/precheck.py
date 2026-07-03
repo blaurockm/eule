@@ -7,8 +7,9 @@ Checks Hase runtime APIs against baseline expectations.
 
 Exit codes:
   0 = OK (no anomalies)
-  1 = Anomalies detected
-  2 = Daily summary time
+  1 = Anomalies detected (mindestens eine NEUE)
+  2 = Daily summary (--summary)
+  3 = Nur bekannte Anomalien (unterdrueckt — kein Re-Alert)
 """
 
 import argparse
@@ -31,8 +32,6 @@ ENVIRONMENTS = {
     "staging-ibkr": {
         "port": 8776,
         "tier": "staging",
-        # staging handelt bis 23:30 und schreibt sein EOD-JSON zum Handelsende.
-        "eod_deadline": "23:45",
     },
     "staging-hl": {
         "port": 8777,
@@ -43,14 +42,11 @@ ENVIRONMENTS = {
         "port": 8767,
         "tier": "production",
         "unrealized_threshold": -5000,
-        # production handelt bis 22:00, Mark-to-Market + EOD-JSON ~22:30.
-        "eod_deadline": "22:59",
     },
     "real2-ibkr": {
         "port": 8768,
         "tier": "production",
         "unrealized_threshold": -1000,
-        "eod_deadline": "22:59",
     },
 }
 
@@ -113,13 +109,52 @@ def load_trading_hours(env_name: str) -> dict | None:
         "tz": th.get("timezone", "Europe/Berlin"),
     }
 
-# Daily summary windows (Berlin time for IBKR, UTC for HL).
-# Hase writes the daily-summary JSON files at 22:30 Berlin (after mark-to-market).
-# The scheduler triggers job_daily_summary at 22:45 — the window must cover both
-# so manual `eule precheck` calls between 22:30 and midnight render the JSON
-# summary instead of querying the (already-stopped) live APIs.
-DAILY_SUMMARY_IBKR = {"hour": 22, "minute_start": 30, "minute_end": 59, "tz": "Europe/Berlin"}
-DAILY_SUMMARY_HL = {"hour": 0, "minute_start": 0, "minute_end": 15, "tz": "UTC"}
+# EOD-Deadline: Puffer nach Trading-Hours-Ende, bis zu dem Hase sein
+# EOD-JSON geschrieben haben muss (production: M2M ~30min nach Handelsschluss,
+# staging: zum Handelsende). Cap 23:44, damit die Deadline vor Mitternacht
+# liegt UND der 15-min-Precheck-Takt garantiert noch einen Lauf im
+# Overdue-Fenster desselben Tages hat.
+EOD_DEADLINE_BUFFER_MINUTES = 60
+EOD_DEADLINE_CAP = time(23, 44)
+EOD_DEADLINE_DEFAULT = time(22, 59)  # wenn keine Trading-Hours auffindbar
+
+
+def _anomaly_key(sev: str, msg: str) -> str:
+    """Stabiler Kurzschluessel einer Anomalie (fuer Lauf-zu-Lauf-Dedup)."""
+    import hashlib
+
+    return hashlib.md5(f"{sev}:{msg}".encode()).hexdigest()[:12]
+
+
+def _load_anomaly_state() -> dict[str, str]:
+    """State des letzten Laufs: {key: '[SEV] msg'}. Leeres Dict bei Fehlern
+    oder Alt-Format (einmaliger Re-Alert nach Format-Umstellung ist ok)."""
+    import json
+
+    try:
+        data = json.loads(PRECHECK_STATE_FILE.read_text())
+        return dict(data.get("anomalies", {}))
+    except Exception:
+        return {}
+
+
+def _save_anomaly_state(anomalies: dict[str, str]) -> None:
+    import json
+
+    try:
+        PRECHECK_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        PRECHECK_STATE_FILE.write_text(json.dumps({
+            "ts": datetime.now(ZoneInfo("Europe/Berlin")).isoformat(timespec="seconds"),
+            "anomalies": anomalies,
+        }, indent=1))
+    except Exception:
+        pass
+
+
+def load_open_anomalies() -> list[str]:
+    """Zuletzt gesehene (ggf. unterdrueckte) Anomalie-Zeilen — fuer die
+    Daily-Email. Leer wenn der letzte Lauf OK war (State wird dann geloescht)."""
+    return list(_load_anomaly_state().values())
 
 
 def load_baselines() -> dict[str, dict]:
@@ -185,29 +220,6 @@ def is_in_startup_or_shutdown_window(
         return True
     if 0 <= delta_before_end < grace_seconds:
         return True
-    return False
-
-
-def is_daily_summary_time() -> bool:
-    """Check if we're in a daily summary window."""
-    # IBKR: 21:00-21:15 Berlin
-    tz_berlin = ZoneInfo("Europe/Berlin")
-    now_berlin = datetime.now(tz_berlin)
-    if (
-        now_berlin.weekday() in [0, 1, 2, 3, 4]
-        and now_berlin.hour == DAILY_SUMMARY_IBKR["hour"]
-        and DAILY_SUMMARY_IBKR["minute_start"] <= now_berlin.minute <= DAILY_SUMMARY_IBKR["minute_end"]
-    ):
-        return True
-
-    # HL: 00:00-00:15 UTC
-    now_utc = datetime.now(ZoneInfo("UTC"))
-    if (
-        now_utc.hour == DAILY_SUMMARY_HL["hour"]
-        and DAILY_SUMMARY_HL["minute_start"] <= now_utc.minute <= DAILY_SUMMARY_HL["minute_end"]
-    ):
-        return True
-
     return False
 
 
@@ -683,6 +695,27 @@ def _eod_summary_path(env_name: str, today_str: str) -> Path | None:
     return None
 
 
+def eod_deadline(env_name: str) -> time:
+    """EOD-Deadline (Berlin) fuer ein Env, abgeleitet aus den Trading-Hours.
+
+    Trading-Ende + EOD_DEADLINE_BUFFER_MINUTES, gecappt auf EOD_DEADLINE_CAP.
+    Single source of truth ist die Fuchs-Config — frueher waren die Deadlines
+    hier hartkodiert und liefen bei Config-Aenderungen still auseinander
+    (22:59-vs-23:30-Falschalarm). Ohne auffindbare Trading-Hours gilt
+    EOD_DEADLINE_DEFAULT.
+
+    Annahme: Trading-Hours-TZ ist Europe/Berlin (wie in beiden Fuchs-Configs).
+    """
+    schedule = load_trading_hours(env_name)
+    if schedule is None:
+        return EOD_DEADLINE_DEFAULT
+    end = time.fromisoformat(schedule["end"])
+    total_min = end.hour * 60 + end.minute + EOD_DEADLINE_BUFFER_MINUTES
+    cap_min = EOD_DEADLINE_CAP.hour * 60 + EOD_DEADLINE_CAP.minute
+    total_min = min(total_min, cap_min)
+    return time(total_min // 60, total_min % 60)
+
+
 def _eod_json_overdue(env_name: str, env_config: dict, now: datetime) -> bool:
     """True when today's EOD JSON should already exist but doesn't.
 
@@ -692,22 +725,17 @@ def _eod_json_overdue(env_name: str, env_config: dict, now: datetime) -> bool:
     runtime produced no EOD JSON, and Wachtel stayed silent because the absence
     of the file was treated as "not written yet".
 
-    Gated to the env's trading weekdays. Die Overdue-Deadline ist PRO ENV
-    ("eod_deadline", Berlin HH:MM), weil die Envs ihr JSON zu unterschiedlichen
-    Zeiten schreiben: production ~22:30 (Mark-to-Market nach Handelsschluss),
-    staging ~23:30 (zum Handelsende). Eine globale 22:59-Deadline meldete
-    staging jeden Werktag 22:59-23:30 faelschlich als "nie gestartet / gecrasht".
-    Fehlt die Config, gilt der Default 22:59. Market holidays sind nicht
-    modelliert (gleiche Grenze wie die uebrige Trading-Hours-Gating-Logik).
+    Gated to the env's trading weekdays. Die Overdue-Deadline kommt aus
+    eod_deadline() (Trading-Ende + Puffer aus der Fuchs-Config). Market
+    holidays sind nicht modelliert (gleiche Grenze wie die uebrige
+    Trading-Hours-Gating-Logik).
     """
     schedule = load_trading_hours(env_name)
     weekdays = schedule["weekdays"] if schedule else [0, 1, 2, 3, 4]
     now_berlin = now.astimezone(ZoneInfo("Europe/Berlin"))
     if now_berlin.weekday() not in weekdays:
         return False
-    default_deadline = f"{DAILY_SUMMARY_IBKR['hour']:02d}:{DAILY_SUMMARY_IBKR['minute_end']:02d}"
-    deadline = time.fromisoformat(env_config.get("eod_deadline", default_deadline))
-    return now_berlin.time() >= deadline
+    return now_berlin.time() >= eod_deadline(env_name)
 
 
 def check_eod_json(env_name: str, env_config: dict) -> list[tuple[str, str]]:
@@ -887,21 +915,20 @@ def _format_duration(seconds: float) -> str:
 def env_status_header() -> str:
     """Build header lines describing current time and per-env trading-hours status.
 
-    This is data, not domain knowledge — Claude shouldn't have to re-derive it.
-    Quelle der Trading-Hours: Fuchs-Configs (siehe load_trading_hours).
+    Schmales Layout (zwei Zeilen pro Env), damit der Output in Telegram auf
+    dem Handy nicht umbricht. Quelle der Trading-Hours: Fuchs-Configs
+    (siehe load_trading_hours).
     """
     tz = ZoneInfo("Europe/Berlin")
     now = datetime.now(tz)
     weekday_de = _WEEKDAYS_DE[now.weekday()]
-    time_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    time_str = now.strftime("%Y-%m-%d %H:%M")
 
     lines = [
-        f"Time: {time_str} {weekday_de} (Europe/Berlin)",
-        "Environments (Trading-Hours aus fuchs-config):",
+        f"{time_str} {weekday_de} (Berlin)",
     ]
 
     for env_name, env_config in ENVIRONMENTS.items():
-        port = env_config["port"]
         schedule = load_trading_hours(env_name)
 
         if schedule is None:
@@ -944,7 +971,8 @@ def env_status_header() -> str:
 
         if not env_config.get("monitoring", True):
             state += " [monitoring disabled]"
-        lines.append(f"  {env_name:14s} :{port}  {hours_str:21s}  {state}")
+        lines.append(f"{env_name}  {hours_str}")
+        lines.append(f"  {state}")
 
     return "\n".join(lines)
 
@@ -992,8 +1020,10 @@ def env_data_block(now: datetime | None = None, baselines: dict | None = None) -
         equity = portfolio.get("equity_check", {}).get("internal_equity", 0)
 
         env_lines = [
-            f"  [{env_name}] Cash {currency} {cash:,.2f}  Equity {equity:,.2f}  "
-            f"Daily PnL realized {d_realized:+,.2f}  unrealized {d_unrealized:+,.2f}"
+            f"[{env_name}]",
+            f"  Cash {currency} {cash:,.2f}",
+            f"  Equity {equity:,.2f}",
+            f"  PnL real {d_realized:+,.2f} / unreal {d_unrealized:+,.2f}",
         ]
         for s in strategies:
             name = s.get("name", "?")
@@ -1002,18 +1032,18 @@ def env_data_block(now: datetime | None = None, baselines: dict | None = None) -
             rpnl = stats.get("realized_pnl", 0) or 0
             upnl = stats.get("unrealized_pnl", 0) or 0
             note = _strategy_status_note(s, now)
-            note_str = f"  — {note}" if note else ""
-            env_lines.append(
-                f"    {name:32s}  {fsm:14s}  rPnL {rpnl:+8.2f}  uPnL {upnl:+8.2f}{note_str}"
-            )
+            note_str = f" — {note}" if note else ""
+            env_lines.append(f"  {name}  {fsm}{note_str}")
+            if rpnl or upnl:
+                env_lines.append(f"    rPnL {rpnl:+.2f}  uPnL {upnl:+.2f}")
             character = (baselines.get(name) or {}).get("character")
             if character:
-                env_lines.append(f"        Char: {character}")
+                env_lines.append(f"    Char: {character}")
         blocks.append("\n".join(env_lines))
 
     if not blocks:
         return ""
-    return "Live status (FSM, PnL, Cash):\n" + "\n\n".join(blocks)
+    return "Live-Status:\n" + "\n\n".join(blocks)
 
 
 def run_precheck(force_summary: bool = False) -> tuple[int, str]:
@@ -1039,7 +1069,7 @@ def run_precheck(force_summary: bool = False) -> tuple[int, str]:
     # Host-Disk-Watchdog: env-agnostisch, einmal pro Lauf (feuert auch ohne Runtime).
     all_anomalies.extend(check_host_disk())
 
-    if force_summary or is_daily_summary_time():
+    if force_summary:
         import json
 
         today_str = datetime.now(ZoneInfo("Europe/Berlin")).strftime("%Y-%m-%d")
@@ -1056,7 +1086,7 @@ def run_precheck(force_summary: bool = False) -> tuple[int, str]:
             for f in sorted(log_dir.glob(f"daily-summary-*-{today_str}.json")):
                 summary_files[f.stem] = f
 
-        if force_summary and not summary_files:
+        if not summary_files:
             # Fallback: try API (runtime might still be up)
             lines = ["DAILY SUMMARY:"]
             for env_name, env_config in ENVIRONMENTS.items():
@@ -1130,40 +1160,23 @@ def run_precheck(force_summary: bool = False) -> tuple[int, str]:
 
     if all_anomalies:
         # Deduplicate: only alert on NEW anomalies not seen in the last run
-        import hashlib
-
-        state_file = PRECHECK_STATE_FILE
-        current_hashes = set()
-        for sev, msg in all_anomalies:
-            h = hashlib.md5(f"{sev}:{msg}".encode()).hexdigest()[:12]
-            current_hashes.add(h)
-
-        previous_hashes = set()
-        try:
-            if state_file.exists():
-                prev_data = state_file.read_text().strip().split("\n")
-                # First line is timestamp, rest are hashes
-                if len(prev_data) > 1:
-                    previous_hashes = set(prev_data[1:])
-        except Exception:
-            pass
-
-        # Save current state
-        try:
-            state_file.write_text(datetime.now(ZoneInfo("Europe/Berlin")).isoformat() + "\n" + "\n".join(sorted(current_hashes)))
-        except Exception:
-            pass
+        current = {_anomaly_key(sev, msg): f"[{sev}] {msg}" for sev, msg in all_anomalies}
+        previous_keys = set(_load_anomaly_state().keys())
+        _save_anomaly_state(current)
 
         # Only report if there are NEW anomalies not seen last time
-        new_hashes = current_hashes - previous_hashes
-        if not new_hashes:
-            # Same anomalies as last run — suppress to avoid spam
-            return 0, header + "\n\nOK — Known anomalies still present (suppressed)"
+        new_keys = set(current) - previous_keys
+        if not new_keys:
+            # Gleiche Anomalien wie beim letzten Lauf — kein Re-Alert, aber
+            # sichtbar auflisten (frueher stand hier nur "suppressed", ohne
+            # zu sagen WELCHE Anomalien offen sind).
+            lines = [f"OK — {len(current)} bekannte Anomalie(n) (unterdrueckt):"]
+            lines.extend(f"  {line}" for line in current.values())
+            return 3, header + "\n\n" + "\n".join(lines)
 
         lines = ["ANOMALIES DETECTED:"]
         for sev, msg in all_anomalies:
-            h = hashlib.md5(f"{sev}:{msg}".encode()).hexdigest()[:12]
-            marker = " [NEW]" if h in new_hashes else " [KNOWN]"
+            marker = " [NEW]" if _anomaly_key(sev, msg) in new_keys else " [KNOWN]"
             lines.append(f"  [{sev}] {msg}{marker}")
         return 1, header + "\n\n" + "\n".join(lines)
 

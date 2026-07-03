@@ -134,17 +134,21 @@ jobs:
     notify: [telegram]
     on_error: [telegram, email]
 
+  # Daily-Watcher: prueft ab 22:30 alle 10 min, welche EOD-JSONs da sind.
+  # Pro Env eine Telegram-Nachricht sobald dessen JSON existiert; die
+  # Gesamt-Email geht raus, wenn alle erwarteten Envs geliefert haben
+  # (spaetestens 23:55, dann mit "fehlt"-Ausweis).
   daily_summary:
     action: internal
     function: daily_summary
-    cron: "45 22 * * 0-4"          # Mo-Fr 22:45
+    interval_minutes: 10
     notify: [telegram, email]
     on_error: [telegram, email]
 
   weekly_report:
     action: internal
     function: weekly_report
-    cron: "0 23 * * 4"            # Fr 23:00
+    cron: "50 23 * * 4"           # Fr 23:50 — nach staging M2M (~23:30)
     notify: [telegram, email]
     on_error: [telegram, email]
 

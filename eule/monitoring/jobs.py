@@ -1,15 +1,14 @@
 """
 Job-Funktionen fuer den Wachtel-Scheduler.
 
-Jede Funktion implementiert einen periodischen Job. Die Funktionen
-werden aus dem alten Scheduler in telegram_bot.py extrahiert und
-behalten ihre bestehende Logik (Anomalie-Dedup, Claude-Analyse, etc.).
+Jede Funktion implementiert einen periodischen Job. Rendering der Meldungen
+liegt in eule.monitoring.render (Telegram schmal, Email als HTML).
 """
 
 import json
 import os
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -17,13 +16,23 @@ from loguru import logger as log
 
 from eule.monitoring.schedule_config import JobConfig
 
+BERLIN = ZoneInfo("Europe/Berlin")
+
+# Daily-Watcher: Fenster + Zustand. Hase schreibt die EOD-JSONs zu
+# env-abhaengigen Zeiten (production ~22:30, staging-ibkr ~23:30) — der
+# Watcher laeuft als Intervall-Job und verschickt pro Env, sobald dessen
+# JSON da ist. Die Gesamt-Email geht raus, wenn alle erwarteten Envs
+# geliefert haben, spaetestens zur Deadline (dann mit "fehlt"-Ausweis).
+DAILY_WINDOW_START = time(22, 30)
+DAILY_EMAIL_DEADLINE = time(23, 55)
+DAILY_SENT_STATE = Path.home() / ".eule" / ".daily_sent.json"
+
 
 def _load_daily_summary_jsons(date_str: str) -> dict[str, dict]:
     """Read the daily-summary-*.json files Hase writes after mark-to-market.
 
-    Hase produces these files at ~22:30 Berlin (production) and 23:30
-    Berlin (staging). The Daily Summary job runs at 22:45 — by then the
-    live APIs are down on purpose, so these JSONs are the canonical source.
+    Keyed by env name. Production schreibt ~22:30 Berlin, staging-ibkr ~23:30
+    (zum Handelsende), staging-hl ~23:59.
     """
     hase_override = os.environ.get("EULE_HASE_DIR")
     production_dir = Path(hase_override) if hase_override else Path.home() / "hase"
@@ -55,10 +64,12 @@ def job_precheck(
     geschickt und per Email versendet. Die job_config.notify/on_error steuern
     die Kanaele, aber die Entscheidung ob benachrichtigt wird, liegt hier.
     """
+    import re
+
     import requests
 
+    from eule.monitoring.render import render_alert_telegram, render_anomaly_email_html
     from eule.monitoring.telegram_bot import (
-        _report_to_html,
         anomalies_changed,
         clear_anomaly_state,
         is_muted,
@@ -66,11 +77,9 @@ def job_precheck(
         send_email,
     )
 
-    import re
-
     log.info("Running scheduled precheck")
     exit_code, output = run_precheck()
-    result_label = {0: "OK", 1: "ANOMALIES", 2: "SUMMARY"}.get(exit_code, "?")
+    result_label = {0: "OK", 1: "ANOMALIES", 2: "SUMMARY", 3: "SUPPRESSED"}.get(exit_code, "?")
     log.info(f"Precheck result: exit_code={exit_code} ({result_label})")
 
     # Dead-man's switch
@@ -92,114 +101,118 @@ def job_precheck(
                 anomaly_lines.append(line)
 
         if anomaly_lines and anomalies_changed(anomaly_lines):
-            alert_text = "\n".join(anomaly_lines)
             n = len(anomaly_lines)
 
-            # Deterministisch ins Log — so ist im journalctl exakt sichtbar, WAS
-            # gefeuert hat (frueher ging der Text nur an die KI + Telegram/Mail).
+            # Deterministisch ins Log — so ist im journalctl exakt sichtbar,
+            # WAS gefeuert hat.
             for line in anomaly_lines:
                 log.warning(f"ANOMALY: {line}")
 
-            escaped = (
-                alert_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            )
-            alert_callback(
-                f"<b>{n} Anomalie(n) erkannt:</b>\n<pre>{escaped}</pre>",
-                parse_mode="HTML",
-            )
+            alert_callback(render_alert_telegram(anomaly_lines), parse_mode="HTML")
 
-            # Voller deterministischer Precheck-Output per Email — keine Analyse,
+            # Anomalien einmal prominent + Live-Status — keine Analyse,
             # nur die Daten, die der User selbst auswertet.
-            tz = ZoneInfo("Europe/Berlin")
-            ts = datetime.now(tz).strftime("%Y-%m-%d %H:%M")
-            email_body = _report_to_html(
-                f"Anomalien:\n{alert_text}\n\n---\n\nVoller Precheck:\n{output}",
-                title=f"Wachtel Anomalie — {ts}",
-            )
+            ts = datetime.now(BERLIN).strftime("%Y-%m-%d %H:%M")
+            email_body = render_anomaly_email_html(anomaly_lines, output, ts)
             send_email(f"Wachtel: {n} Anomalie(n) — {ts}", email_body, html=True)
 
     elif exit_code == 0:
+        # Wirklich OK — exit 3 (bekannte Anomalien unterdrueckt) loescht das
+        # Fingerprint-Gedaechtnis NICHT, sonst wuerde jede Wertaenderung
+        # derselben Anomalie einen Re-Alert ausloesen.
         clear_anomaly_state()
+
+
+def _load_daily_state(date_str: str) -> dict:
+    """Sent-State des Daily-Watchers fuer einen Tag. Reset bei Datumswechsel."""
+    try:
+        state = json.loads(DAILY_SENT_STATE.read_text())
+        if state.get("date") == date_str:
+            return state
+    except Exception:
+        pass
+    return {"date": date_str, "sent_envs": [], "email_sent": False}
+
+
+def _save_daily_state(state: dict) -> None:
+    try:
+        DAILY_SENT_STATE.parent.mkdir(parents=True, exist_ok=True)
+        DAILY_SENT_STATE.write_text(json.dumps(state, indent=1))
+    except Exception as e:
+        log.error(f"Daily-Sent-State schreiben fehlgeschlagen: {e}")
+
+
+def _expected_daily_envs(now: datetime) -> list[str]:
+    """Envs, von denen heute ein EOD-JSON erwartet wird: monitoring-aktiv
+    und heutiger Wochentag in den Trading-Weekdays (aus der Fuchs-Config)."""
+    from eule.monitoring import precheck as pc
+
+    expected = []
+    for env_name, env_config in pc.ENVIRONMENTS.items():
+        if not env_config.get("monitoring", True):
+            continue
+        schedule = pc.load_trading_hours(env_name)
+        weekdays = schedule["weekdays"] if schedule else [0, 1, 2, 3, 4, 5, 6]
+        if now.weekday() in weekdays:
+            expected.append(env_name)
+    return expected
 
 
 def job_daily_summary(
     alert_callback: Callable[..., None],
     email_callback: Callable[..., None],
     job_config: JobConfig,
+    now: datetime | None = None,
 ) -> None:
-    """Taegliche Zusammenfassung — deterministisch aus Hase's daily-summary-*.json.
+    """Daily-Watcher — pro Env eine Telegram-Nachricht, eine Gesamt-Email.
 
-    Hase schreibt um ~22:30 Berlin (real) bzw. ~23:30 (staging) ein JSON nach
-    mark-to-market und faehrt dann runter. Der Job laeuft danach — die
-    Live-APIs sind dann absichtlich nicht mehr erreichbar. Datenquelle sind
-    ausschliesslich die JSON-Files.
-
-    Kein LLM: der JSON-basierte Precheck-Summary-Render ist die Zusammenfassung.
-    Datenqualitaets-Warnungen (Hase 'warnings'-Feld) werden vorangestellt.
+    Laeuft als Intervall-Job (schedule.yaml: interval_minutes) und ist
+    ausserhalb des Fensters ein No-op. Sobald das EOD-JSON eines erwarteten
+    Envs existiert, geht dessen Daily per Telegram raus (real ~22:40,
+    staging-ibkr ~23:40). Die Gesamt-Email (HTML, alle Envs + offene
+    Anomalien) wird verschickt, wenn alle erwarteten Envs geliefert haben —
+    spaetestens zur DAILY_EMAIL_DEADLINE, dann mit explizitem "fehlt"-Ausweis.
+    Der Sent-State (~/.eule/.daily_sent.json) verhindert Doppelversand,
+    auch ueber Bot-Restarts hinweg.
     """
-    from eule.monitoring.telegram_bot import (
-        _report_to_html,
-        run_precheck,
-        send_email,
-    )
+    from eule.monitoring.precheck import load_open_anomalies
+    from eule.monitoring.render import render_daily_email_html, render_env_daily_telegram
+    from eule.monitoring.telegram_bot import send_email
 
-    log.info("Running daily summary")
+    if now is None:
+        now = datetime.now(BERLIN)
+    if now.time() < DAILY_WINDOW_START:
+        return
 
-    tz = ZoneInfo("Europe/Berlin")
-    now = datetime.now(tz)
     date_str = now.strftime("%Y-%m-%d")
+    state = _load_daily_state(date_str)
+    expected = _expected_daily_envs(now)
+    if not expected:
+        return  # Wochenende / kein Handelstag
 
-    # force_summary=True erzwingt den JSON-basierten Render-Pfad in precheck,
-    # unabhaengig davon, ob is_daily_summary_time() gerade true ist.
-    _, precheck_output = run_precheck(force_summary=True)
-    summary_jsons = _load_daily_summary_jsons(date_str)
+    summaries = _load_daily_summary_jsons(date_str)
 
-    if not summary_jsons:
-        log.warning(f"Keine daily-summary JSONs fuer {date_str} gefunden")
-
-    warn_block = _format_data_quality_warnings(summary_jsons)
-    if warn_block:
-        log.warning(f"Daily-Summary Datenqualitaets-Warnungen:\n{warn_block}")
-        summary = f"{warn_block}\n\n{precheck_output}"
-    else:
-        summary = precheck_output
-
-    escaped = summary.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    alert_callback(f"<b>Daily Summary</b>\n<pre>{escaped}</pre>", parse_mode="HTML")
-    email_body = _report_to_html(summary, title=f"Wachtel Daily Summary — {date_str}")
-    send_email(f"Wachtel Daily Summary — {date_str}", email_body, html=True)
-
-
-def _format_data_quality_warnings(summary_jsons: dict[str, dict]) -> str:
-    """Deterministisch die Hase-'warnings' pro Env formatieren.
-
-    Hase schreibt pro Env optional ein 'warnings'-Feld (Liste). Ist mindestens
-    eine Warnung mit affects_pnl gesetzt, wird der Daily-PnL des Envs als
-    potenziell unzuverlaessig markiert. Kein Schema-Raten: Dict-Warnungen werden
-    ueber 'message'/'msg' gerendert, sonst als JSON; alles andere per str().
-    Leere/fehlende Felder -> "".
-    """
-    lines: list[str] = []
-    for env, data in sorted(summary_jsons.items()):
-        warnings = data.get("warnings") or []
-        if not warnings:
+    # Pro Env: Telegram sobald das JSON da ist
+    for env_name in expected:
+        if env_name in state["sent_envs"] or env_name not in summaries:
             continue
-        env_name = data.get("env", env)
-        affects_pnl = False
-        lines.append(f"[{env_name}] Datenqualitaets-Warnungen:")
-        for w in warnings:
-            if isinstance(w, dict):
-                msg = w.get("message") or w.get("msg") or json.dumps(w, default=str)
-                if w.get("affects_pnl"):
-                    affects_pnl = True
-            else:
-                msg = str(w)
-            lines.append(f"  - {msg}")
-        if affects_pnl:
-            lines.append(f"  => Daily-PnL fuer {env_name} POTENZIELL UNZUVERLAESSIG")
-    if not lines:
-        return ""
-    return "⚠ WARNUNGEN:\n" + "\n".join(lines)
+        log.info(f"Daily fuer {env_name} wird versendet")
+        alert_callback(render_env_daily_telegram(summaries[env_name]), parse_mode="HTML")
+        state["sent_envs"].append(env_name)
+        _save_daily_state(state)
+
+    # Gesamt-Email: wenn komplett, spaetestens zur Deadline
+    if not state["email_sent"]:
+        missing = [e for e in expected if e not in summaries]
+        if not missing or now.time() >= DAILY_EMAIL_DEADLINE:
+            if missing:
+                log.warning(f"Daily-Email ohne EOD-JSON von: {', '.join(missing)}")
+            html = render_daily_email_html(
+                summaries, missing, load_open_anomalies(), date_str
+            )
+            send_email(f"Wachtel Daily — {date_str}", html, html=True)
+            state["email_sent"] = True
+            _save_daily_state(state)
 
 
 def job_weekly_report(
@@ -207,27 +220,23 @@ def job_weekly_report(
     email_callback: Callable[..., None],
     job_config: JobConfig,
 ) -> None:
-    """Woechentlicher Performance-Report."""
-    from eule.monitoring.telegram_bot import (
-        _report_to_html,
-        handle_report,
-        send_email,
-    )
+    """Woechentlicher Performance-Report — Telegram schmal, Email als HTML-Tabelle."""
+    from eule.monitoring.render import render_weekly_email_html, render_weekly_telegram
+    from eule.monitoring.telegram_bot import collect_weekly_performance, send_email
 
     log.info("Running weekly performance report")
 
-    report_text = handle_report("")
-    # handle_report returns Telegram-HTML (already converted via markdown_to_telegram_html).
-    alert_callback(
-        f"<b>Weekly Performance Report</b>\n\n{report_text}",
-        parse_mode="HTML",
-    )
+    result = collect_weekly_performance("")
+    if isinstance(result, str):
+        # Fehlermeldung (DB nicht erreichbar etc.)
+        alert_callback(f"Weekly Report fehlgeschlagen: {result}")
+        return
 
-    tz = ZoneInfo("Europe/Berlin")
-    date_str = datetime.now(tz).strftime("%Y-%m-%d")
+    date_str = datetime.now(BERLIN).strftime("%Y-%m-%d")
+    alert_callback(render_weekly_telegram(result), parse_mode="HTML")
     send_email(
         subject=f"Wachtel Weekly Report {date_str}",
-        body=_report_to_html(report_text),
+        body=render_weekly_email_html(result, date_str),
         html=True,
     )
 

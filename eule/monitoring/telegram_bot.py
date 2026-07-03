@@ -427,7 +427,7 @@ def run_precheck(force_summary: bool = False) -> tuple[int, str]:
 def handle_status() -> str:
     """Handle /status command — run precheck, return formatted output."""
     exit_code, output = run_precheck()
-    prefix = {0: "OK", 1: "ANOMALIES", 2: "SUMMARY"}.get(exit_code, "?")
+    prefix = {0: "OK", 1: "ANOMALIES", 2: "SUMMARY", 3: "OK (bekannte Anomalien)"}.get(exit_code, "?")
     escaped = output.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return f"<b>[{prefix}]</b>\n<pre>{escaped}</pre>"
 
@@ -559,8 +559,14 @@ def handle_equity(args: str) -> str | None:
         return f"Chart-Fehler: {e}"
 
 
-def handle_report(args: str) -> str:
-    """Handle /report [env] — weekly performance report via Elster."""
+def collect_weekly_performance(args: str) -> list[dict] | str:
+    """Weekly-Performance-Daten (7 Tage) via Elster einsammeln.
+
+    Returns strukturierte Daten fuer die Renderer in eule.monitoring.render:
+    pro Env {env, rows: [{strategy, total_return, sharpe, max_drawdown,
+    win_rate, profit_factor}], portfolio: {...}|None, warnings: [str],
+    note: str|None}. Bei Fehlern (DB, Imports) einen Fehlertext (str).
+    """
     db_url = _load_database_url()
     if not db_url:
         return "DATABASE_URL nicht gefunden."
@@ -574,7 +580,6 @@ def handle_report(args: str) -> str:
             list_strategies,
             load_baseline,
             load_daily_pnl,
-            load_trades,
             nav_to_returns,
             trading_periods_per_year,
         )
@@ -589,7 +594,7 @@ def handle_report(args: str) -> str:
     else:
         envs = dict(_RUNTIME_NAMES)  # alle
 
-    parts: list[str] = []
+    result: list[dict] = []
     try:
         conn = psycopg.connect(db_url, autocommit=True)
     except Exception as e:
@@ -603,19 +608,15 @@ def handle_report(args: str) -> str:
 
             df = load_daily_pnl(conn, runtime_name, days=7)
             if df.empty:
-                parts.append(f"**{env_name}**: keine Daten (7d)")
+                result.append({"env": env_name, "note": "keine Daten (7d)"})
                 continue
 
             returns_df = nav_to_returns(df)
             if returns_df.empty:
-                parts.append(f"**{env_name}**: zu wenig Daten")
+                result.append({"env": env_name, "note": "zu wenig Daten"})
                 continue
 
-            lines = [f"**{env_name}** (7 Tage)"]
-            lines.append("```")
-            lines.append(f"{'Strategy':<22} {'Ret':>7} {'Sharpe':>7} {'MaxDD':>7} {'WR':>6} {'PF':>6}")
-            lines.append("-" * 60)
-
+            rows: list[dict] = []
             for strat in strategies:
                 if strat not in returns_df.columns:
                     continue
@@ -627,29 +628,28 @@ def handle_report(args: str) -> str:
                     strat_returns = filter_trading_days(strat_returns, weekdays)
                     ppy = trading_periods_per_year(weekdays)
                 m = calculate_metrics(strat_returns, periods_per_year=ppy)
-                trades_df = load_trades(conn, runtime_name, days=7, strategy_key=strat)
-                ret = f"{m.total_return * 100:+.1f}%"
-                sharpe = f"{m.sharpe_ratio:.2f}" if m.sharpe_ratio != 0 else "—"
-                mdd = f"{m.max_drawdown * 100:.1f}%"
-                wr = f"{m.win_rate * 100:.0f}%"
-                pf = f"{m.profit_factor:.1f}" if m.profit_factor > 0 else "—"
-                name = strat[:22]
-                lines.append(f"{name:<22} {ret:>7} {sharpe:>7} {mdd:>7} {wr:>6} {pf:>6}")
+                rows.append({
+                    "strategy": strat,
+                    "total_return": m.total_return,
+                    "sharpe": m.sharpe_ratio,
+                    "max_drawdown": m.max_drawdown,
+                    "win_rate": m.win_rate,
+                    "profit_factor": m.profit_factor,
+                })
 
             # Portfolio-Zeile
-            if len([s for s in strategies if s in returns_df.columns]) > 1:
-                avail = [c for c in returns_df.columns if c in strategies]
-                port_ret = returns_df[avail].sum(axis=1)
-                pm = calculate_metrics(port_ret)
-                lines.append("-" * 60)
-                ret = f"{pm.total_return * 100:+.1f}%"
-                sharpe = f"{pm.sharpe_ratio:.2f}" if pm.sharpe_ratio != 0 else "—"
-                mdd = f"{pm.max_drawdown * 100:.1f}%"
-                lines.append(f"{'PORTFOLIO':<22} {ret:>7} {sharpe:>7} {mdd:>7}")
-
-            lines.append("```")
+            portfolio = None
+            avail = [c for c in returns_df.columns if c in strategies]
+            if len(avail) > 1:
+                pm = calculate_metrics(returns_df[avail].sum(axis=1))
+                portfolio = {
+                    "total_return": pm.total_return,
+                    "sharpe": pm.sharpe_ratio,
+                    "max_drawdown": pm.max_drawdown,
+                }
 
             # Warnungen
+            warnings: list[str] = []
             for strat in strategies:
                 if strat not in returns_df.columns:
                     continue
@@ -658,18 +658,34 @@ def handle_report(args: str) -> str:
                 if baseline:
                     bl_wr = baseline.get("metrics", {}).get("win_rate", {})
                     if bl_wr and bl_wr.get("warn_below") and m.win_rate < bl_wr["warn_below"]:
-                        lines.append(f"  ⚠ {strat}: WR {m.win_rate:.0%} < warn {bl_wr['warn_below']:.0%}")
+                        warnings.append(f"{strat}: WR {m.win_rate:.0%} < warn {bl_wr['warn_below']:.0%}")
                 if 0 < m.profit_factor < 1.0:
-                    lines.append(f"  ⚠ {strat}: PF {m.profit_factor:.1f} < 1.0")
+                    warnings.append(f"{strat}: PF {m.profit_factor:.1f} < 1.0")
 
-            parts.append("\n".join(lines))
+            result.append({
+                "env": env_name,
+                "rows": rows,
+                "portfolio": portfolio,
+                "warnings": warnings,
+                "note": None,
+            })
 
     finally:
         conn.close()
 
-    if not parts:
+    return result
+
+
+def handle_report(args: str) -> str:
+    """Handle /report [env] — weekly performance report via Elster."""
+    from eule.monitoring.render import render_weekly_telegram
+
+    result = collect_weekly_performance(args)
+    if isinstance(result, str):
+        return result
+    if not result:
         return "Keine Performance-Daten verfuegbar."
-    return markdown_to_telegram_html("\n\n".join(parts))
+    return render_weekly_telegram(result)
 
 
 # Environment → runtime_name Mapping (DB uses runtime_name, not env name)

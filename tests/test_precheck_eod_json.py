@@ -122,7 +122,7 @@ def test_eod_unreadable_json_reports_error(tmp_path, monkeypatch):
     assert "nicht lesbar" in res[0][1]
 
 
-# --- _eod_json_overdue: per-Env-Deadline (Regression Staging-Falschalarm) ---
+# --- eod_deadline / _eod_json_overdue: abgeleitete Deadline aus Trading-Hours ---
 
 # 2026-07-01 = Mittwoch (Werktag), 2026-07-04 = Samstag.
 def _wed(h, m):
@@ -137,30 +137,49 @@ def _prod_hours(env):
     return {"weekdays": [0, 1, 2, 3, 4], "start": "13:00", "end": "22:00", "tz": "Europe/Berlin"}
 
 
+def test_eod_deadline_derived_from_trading_end(monkeypatch):
+    # production: Ende 22:00 + 60 min Puffer = 23:00
+    monkeypatch.setattr(pc, "load_trading_hours", _prod_hours)
+    assert pc.eod_deadline("real-ibkr") == time(23, 0)
+
+
+def test_eod_deadline_capped_before_midnight(monkeypatch):
+    # staging: Ende 23:30 + 60 min laege nach Mitternacht -> Cap 23:44,
+    # damit der 15-min-Precheck-Takt noch einen Lauf im Overdue-Fenster hat.
+    monkeypatch.setattr(pc, "load_trading_hours", _staging_hours)
+    assert pc.eod_deadline("staging-ibkr") == time(23, 44)
+
+
+def test_eod_deadline_default_without_trading_hours(monkeypatch):
+    monkeypatch.setattr(pc, "load_trading_hours", lambda env: None)
+    assert pc.eod_deadline("x") == pc.EOD_DEADLINE_DEFAULT
+
+
 def test_eod_overdue_staging_quiet_before_its_deadline(monkeypatch):
     # Regression: staging schreibt sein EOD-JSON erst ~23:30. Um 23:01 darf es
     # NICHT als "gecrasht" gelten (frueher globale 22:59-Deadline -> Falschalarm).
     monkeypatch.setattr(pc, "load_trading_hours", _staging_hours)
-    cfg = {"tier": "staging", "port": 8776, "eod_deadline": "23:45"}
+    cfg = {"tier": "staging", "port": 8776}
     assert _eod_json_overdue("staging-ibkr", cfg, _wed(23, 1)) is False
 
 
 def test_eod_overdue_staging_flags_after_its_deadline(monkeypatch):
     monkeypatch.setattr(pc, "load_trading_hours", _staging_hours)
-    cfg = {"tier": "staging", "port": 8776, "eod_deadline": "23:45"}
-    assert _eod_json_overdue("staging-ibkr", cfg, _wed(23, 46)) is True
+    cfg = {"tier": "staging", "port": 8776}
+    assert _eod_json_overdue("staging-ibkr", cfg, _wed(23, 45)) is True
 
 
-def test_eod_overdue_production_uses_2259(monkeypatch):
+def test_eod_overdue_production_after_derived_deadline(monkeypatch):
+    # production-Deadline = 22:00 + 60 min = 23:00
     monkeypatch.setattr(pc, "load_trading_hours", _prod_hours)
-    cfg = {"tier": "production", "port": 8767, "eod_deadline": "22:59"}
+    cfg = {"tier": "production", "port": 8767}
     assert _eod_json_overdue("real-ibkr", cfg, _wed(23, 1)) is True
     assert _eod_json_overdue("real-ibkr", cfg, _wed(22, 30)) is False
 
 
-def test_eod_overdue_default_deadline_when_unset(monkeypatch):
-    # Ohne eod_deadline greift der Default (22:59).
-    monkeypatch.setattr(pc, "load_trading_hours", _prod_hours)
+def test_eod_overdue_default_deadline_without_hours(monkeypatch):
+    # Ohne auffindbare Trading-Hours greift der Default (22:59).
+    monkeypatch.setattr(pc, "load_trading_hours", lambda env: None)
     cfg = {"tier": "production", "port": 1}
     assert _eod_json_overdue("x", cfg, _wed(23, 0)) is True
     assert _eod_json_overdue("x", cfg, _wed(22, 0)) is False
@@ -168,6 +187,6 @@ def test_eod_overdue_default_deadline_when_unset(monkeypatch):
 
 def test_eod_overdue_never_on_weekend(monkeypatch):
     monkeypatch.setattr(pc, "load_trading_hours", _staging_hours)
-    cfg = {"tier": "staging", "port": 8776, "eod_deadline": "23:45"}
+    cfg = {"tier": "staging", "port": 8776}
     saturday = datetime(2026, 7, 4, 23, 50, tzinfo=BERLIN)
     assert _eod_json_overdue("staging-ibkr", cfg, saturday) is False
