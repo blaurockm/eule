@@ -206,15 +206,36 @@ def get_trading_weekdays(strategy_name: str) -> list[int] | None:
     return None
 
 
-def filter_trading_days(returns: pd.Series, weekdays: list[int]) -> pd.Series:
-    """Filtert eine Return-Serie auf die konfigurierten Trading-Tage.
+def filter_active_days(returns: pd.Series, eps: float = 1e-9) -> pd.Series:
+    """Filtert eine Return-Serie auf aktive Tage (Return != 0).
 
-    Entfernt Tage an denen die Strategie nicht tradet (Return ≈ 0),
-    damit Win Rate, Sharpe etc. korrekt berechnet werden.
+    Null-Tage (kein Trade, Feiertag, NAV unveraendert) verwaessern Win Rate
+    und Sharpe. Bewusst KEIN Wochentags-Filter: Verluste der 0DTE-Strategien
+    werden erst am Folgetag im NAV gebucht (T+1-Settlement) und laegen sonst
+    ausserhalb der konfigurierten Trading-Tage — ein Weekday-Filter wuerde
+    genau die Verlusttage verwerfen.
     """
-    idx = pd.DatetimeIndex(returns.index)
-    mask = idx.weekday.isin(weekdays)
-    return returns[mask]
+    return returns[returns.abs() > eps]
+
+
+def portfolio_nav_returns(df: pd.DataFrame) -> pd.Series:
+    """NAV-basierte Tages-Returns des Gesamtportfolios.
+
+    Pro Tag: Summe der NAV-Aenderungen / Summe der Vortages-NAVs, jeweils nur
+    ueber Strategien mit Daten an beiden Tagen. Neu startende Strategien
+    (Kapitalzugang) erzeugen so keine Schein-Returns — anders als die fruehere
+    Summe der Einzel-Returns, die Portfolio-Gewichte ignorierte.
+
+    Input: DataFrame mit columns [date, strategy_key, nav_end].
+    """
+    if df.empty:
+        return pd.Series(dtype=float)
+    nav = df.pivot_table(index="date", columns="strategy_key", values="nav_end").sort_index()
+    prev = nav.shift(1)
+    valid = nav.notna() & prev.notna()
+    gains = (nav - prev).where(valid).sum(axis=1)
+    base = prev.where(valid).sum(axis=1)
+    return (gains / base).where(base > 0).dropna()
 
 
 def trading_periods_per_year(weekdays: list[int]) -> int:

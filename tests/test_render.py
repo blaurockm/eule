@@ -145,13 +145,20 @@ def _weekly_data():
         "env": "staging-ibkr",
         "rows": [{
             "strategy": "carver-scalping",
-            "total_return": 0.012,
+            "week_return": 0.012,
+            "total_return": 0.093,
+            "cagr": 0.38,
             "sharpe": 1.10,
-            "max_drawdown": 0.008,
+            "max_drawdown": -0.008,
             "win_rate": 0.45,
             "profit_factor": 1.3,
         }],
-        "portfolio": {"total_return": 0.01, "sharpe": 0.9, "max_drawdown": 0.01},
+        "portfolio": {
+            "week_return": 0.01,
+            "total_return": 0.11,
+            "sharpe": 0.9,
+            "max_drawdown": -0.01,
+        },
         "warnings": ["carver-scalping: PF 0.9 < 1.0"],
         "note": None,
     }]
@@ -160,7 +167,9 @@ def _weekly_data():
 def test_weekly_telegram_narrow_lines():
     out = render_weekly_telegram(_weekly_data())
     assert "carver-scalping" in out
-    assert "Ret +1.2%" in out
+    assert "Woche +1.2%" in out
+    assert "Start +9.3%" in out
+    assert "CAGR +38.0%" in out
     assert "Portfolio" in out
     assert "⚠ carver-scalping: PF 0.9 &lt; 1.0" in out
     # keine breite Spaltentabelle
@@ -168,9 +177,24 @@ def test_weekly_telegram_narrow_lines():
     assert max(len(line) for line in out.split("\n")) < 80
 
 
+def test_weekly_telegram_negative_sharpe_visible():
+    data = _weekly_data()
+    data[0]["rows"][0]["sharpe"] = -1.42
+    out = render_weekly_telegram(data)
+    assert "Sharpe -1.42" in out
+
+
+def test_weekly_telegram_week_return_missing():
+    data = _weekly_data()
+    data[0]["rows"][0]["week_return"] = None
+    data[0]["portfolio"]["week_return"] = None
+    out = render_weekly_telegram(data)
+    assert "Woche —" in out
+
+
 def test_weekly_telegram_note_env():
-    out = render_weekly_telegram([{"env": "real-ibkr", "note": "keine Daten (7d)"}])
-    assert "keine Daten (7d)" in out
+    out = render_weekly_telegram([{"env": "real-ibkr", "note": "keine Daten"}])
+    assert "keine Daten" in out
 
 
 def test_weekly_email_table():
@@ -178,4 +202,6 @@ def test_weekly_email_table():
     assert "<table" in html
     assert "carver-scalping" in html
     assert "+1.2%" in html
+    assert "+9.3%" in html
     assert "PORTFOLIO" in html
+    assert "NAV-Delta" in html

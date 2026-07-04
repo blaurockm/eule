@@ -169,8 +169,8 @@ def render_alert_telegram(anomaly_lines: list[str]) -> str:
 
 def render_weekly_telegram(envs_data: list[dict]) -> str:
     """Weekly-Performance fuer Telegram: pro Strategie kurze Zeilen statt
-    60-Zeichen-Tabelle."""
-    lines = ["\U0001f4ca <b>Weekly Report</b> (7 Tage)"]
+    60-Zeichen-Tabelle. Woche = NAV-Delta 7 Tage, Rest = seit Start."""
+    lines = ["\U0001f4ca <b>Weekly Report</b> (Woche + seit Start)"]
     for env in envs_data:
         lines.append("")
         lines.append(f"<b>{_esc(env['env'])}</b>")
@@ -181,18 +181,24 @@ def render_weekly_telegram(envs_data: list[dict]) -> str:
         for row in env.get("rows", []):
             lines.append(f"• {_esc(row['strategy'])}")
             lines.append(
-                f"  Ret {row['total_return'] * 100:+.1f}% · "
-                f"Sharpe {_fmt_metric(row['sharpe'])} · "
-                f"DD {row['max_drawdown'] * 100:.1f}%"
+                f"  Woche {_fmt_pct(row['week_return'])} · "
+                f"Start {_fmt_pct(row['total_return'])} · "
+                f"CAGR {_fmt_pct(row['cagr'])}"
             )
             lines.append(
-                f"  WR {row['win_rate'] * 100:.0f}% · PF {_fmt_metric(row['profit_factor'])}"
+                f"  Sharpe {_fmt_sharpe(row['sharpe'])} · "
+                f"DD {row['max_drawdown'] * 100:.1f}% · "
+                f"WR {row['win_rate'] * 100:.0f}% · "
+                f"PF {_fmt_metric(row['profit_factor'])}"
             )
         port = env.get("portfolio")
         if port:
             lines.append(
-                f"Σ <b>Portfolio</b> {port['total_return'] * 100:+.1f}% · "
-                f"Sharpe {_fmt_metric(port['sharpe'])} · "
+                f"Σ <b>Portfolio</b> Woche {_fmt_pct(port['week_return'])} · "
+                f"Start {_fmt_pct(port['total_return'])}"
+            )
+            lines.append(
+                f"  Sharpe {_fmt_sharpe(port['sharpe'])} · "
                 f"DD {port['max_drawdown'] * 100:.1f}%"
             )
         for warn in env.get("warnings", []):
@@ -200,9 +206,19 @@ def render_weekly_telegram(envs_data: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _fmt_pct(value: float | None) -> str:
+    """Prozentwert mit Vorzeichen oder '—' wenn nicht berechenbar."""
+    return f"{value * 100:+.1f}%" if value is not None else "—"
+
+
 def _fmt_metric(value: float) -> str:
     """Metrik-Wert oder '—' wenn nicht berechenbar (0/negativ-PF-Konvention)."""
     return f"{value:.2f}" if value > 0 else "—"
+
+
+def _fmt_sharpe(value: float) -> str:
+    """Sharpe: negative Werte sind Information, nur 0 (nicht berechenbar) wird '—'."""
+    return f"{value:.2f}" if value != 0 else "—"
 
 
 # ---------------------------------------------------------------------------
@@ -376,35 +392,45 @@ def render_anomaly_email_html(anomaly_lines: list[str], precheck_output: str, ts
 def render_weekly_email_html(envs_data: list[dict], date_str: str) -> str:
     """Weekly-Performance als HTML-Email mit Tabellen pro Env."""
     s = _EMAIL_STYLE
-    parts = []
+    parts = [
+        f"<p style='{s['muted']}'>Woche = NAV-Delta der letzten 7 Tage · "
+        f"übrige Metriken über die gesamte Laufzeit (Trading-Tage der Strategie)</p>"
+    ]
     for env in envs_data:
-        parts.append(f"<h3 style='{s['h3']}'>{_esc(env['env'])} (7 Tage)</h3>")
+        parts.append(f"<h3 style='{s['h3']}'>{_esc(env['env'])}</h3>")
         note = env.get("note")
         if note:
             parts.append(f"<p>{_esc(note)}</p>")
             continue
         rows = [
-            f"<tr><th style='{s['th']}'>Strategie</th><th style='{s['th_num']}'>Return</th>"
+            f"<tr><th style='{s['th']}'>Strategie</th><th style='{s['th_num']}'>Woche</th>"
+            f"<th style='{s['th_num']}'>Seit Start</th><th style='{s['th_num']}'>CAGR</th>"
             f"<th style='{s['th_num']}'>Sharpe</th><th style='{s['th_num']}'>MaxDD</th>"
             f"<th style='{s['th_num']}'>WR</th><th style='{s['th_num']}'>PF</th></tr>"
         ]
         for row in env.get("rows", []):
-            ret = row["total_return"]
+            week = row["week_return"]
+            week_color = _pnl_color(week) if week is not None else "inherit"
             rows.append(
                 f"<tr><td style='{s['td']}'>{_esc(row['strategy'])}</td>"
-                f"<td style='{s['td_num']} color: {_pnl_color(ret)};'>{ret * 100:+.1f}%</td>"
-                f"<td style='{s['td_num']}'>{_fmt_metric(row['sharpe'])}</td>"
+                f"<td style='{s['td_num']} color: {week_color};'>{_fmt_pct(week)}</td>"
+                f"<td style='{s['td_num']}'>{_fmt_pct(row['total_return'])}</td>"
+                f"<td style='{s['td_num']}'>{_fmt_pct(row['cagr'])}</td>"
+                f"<td style='{s['td_num']}'>{_fmt_sharpe(row['sharpe'])}</td>"
                 f"<td style='{s['td_num']}'>{row['max_drawdown'] * 100:.1f}%</td>"
                 f"<td style='{s['td_num']}'>{row['win_rate'] * 100:.0f}%</td>"
                 f"<td style='{s['td_num']}'>{_fmt_metric(row['profit_factor'])}</td></tr>"
             )
         port = env.get("portfolio")
         if port:
-            ret = port["total_return"]
+            week = port["week_return"]
+            week_color = _pnl_color(week) if week is not None else "inherit"
             rows.append(
                 f"<tr><td style='{s['td']}'><b>PORTFOLIO</b></td>"
-                f"<td style='{s['td_num']} color: {_pnl_color(ret)};'><b>{ret * 100:+.1f}%</b></td>"
-                f"<td style='{s['td_num']}'>{_fmt_metric(port['sharpe'])}</td>"
+                f"<td style='{s['td_num']} color: {week_color};'><b>{_fmt_pct(week)}</b></td>"
+                f"<td style='{s['td_num']}'>{_fmt_pct(port['total_return'])}</td>"
+                f"<td style='{s['td_num']}'></td>"
+                f"<td style='{s['td_num']}'>{_fmt_sharpe(port['sharpe'])}</td>"
                 f"<td style='{s['td_num']}'>{port['max_drawdown'] * 100:.1f}%</td>"
                 f"<td style='{s['td_num']}'></td><td style='{s['td_num']}'></td></tr>"
             )
@@ -412,7 +438,7 @@ def render_weekly_email_html(envs_data: list[dict], date_str: str) -> str:
         for warn in env.get("warnings", []):
             parts.append(f"<div style='{s['warn']}'>⚠ {_esc(warn)}</div>")
 
-    if not parts:
+    if len(parts) == 1:  # nur die Legende, keine Env-Daten
         parts.append("<p>Keine Performance-Daten verfuegbar.</p>")
 
     return _email_document(f"Wachtel Weekly Report — {date_str}", "".join(parts))

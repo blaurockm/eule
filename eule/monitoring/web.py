@@ -8,8 +8,6 @@ Datenfunktionen wie die CLI auf und rendert HTML.
 import json
 import traceback
 from datetime import datetime
-
-import pandas as pd
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
@@ -430,13 +428,14 @@ def _page_performance() -> str:
 
         from eule.db import get_db_url
         from eule.elster.data import (
-            filter_trading_days,
+            filter_active_days,
             get_trading_weekdays,
             list_strategies,
             load_baseline,
             load_daily_pnl,
             load_trades,
             nav_to_returns,
+            portfolio_nav_returns,
             trading_periods_per_year,
         )
         from eule.elster.metrics import calculate_metrics
@@ -475,22 +474,15 @@ def _page_performance() -> str:
 
             rows = []
             warnings = []
-            # Trading-Wochentage pro Strategie cachen
-            strat_weekdays: dict[str, list[int] | None] = {}
-            for strat in strategies:
-                strat_weekdays[strat] = get_trading_weekdays(strat)
 
             for strat in strategies:
                 if strat not in returns_df.columns:
                     continue
 
-                # Returns auf konfigurierte Trading-Tage filtern
-                strat_returns = returns_df[strat]
-                weekdays = strat_weekdays[strat]
-                ppy = 252
-                if weekdays:
-                    strat_returns = filter_trading_days(strat_returns, weekdays)
-                    ppy = trading_periods_per_year(weekdays)
+                # Nur aktive Tage (Return != 0) — Weekday-Config nur fuer Annualisierung
+                strat_returns = filter_active_days(returns_df[strat])
+                weekdays = get_trading_weekdays(strat)
+                ppy = trading_periods_per_year(weekdays) if weekdays else 252
 
                 m = calculate_metrics(strat_returns, periods_per_year=ppy)
                 trades_df = load_trades(conn, runtime_name, days=30, strategy_key=strat)
@@ -520,11 +512,10 @@ def _page_performance() -> str:
                 if 0 < pf_val < 1.0:
                     warnings.append(f"{strat}: PF {pf_val:.1f} &lt; 1.0")
 
-            # Portfolio-Zeile
+            # Portfolio-Zeile (NAV-basiert, nicht Summe der Einzel-Returns)
             avail = [c for c in returns_df.columns if c in strategies]
             if len(avail) > 1:
-                port_ret = returns_df[avail].sum(axis=1)
-                pm = calculate_metrics(port_ret)
+                pm = calculate_metrics(portfolio_nav_returns(df))
                 rows.append([
                     '<span class="bold">PORTFOLIO</span>',
                     f"{_color(pm.total_return * 100, fmt='+.1f')}%",
@@ -543,20 +534,15 @@ def _page_performance() -> str:
             if warnings:
                 content += '<div class="error">' + "<br>".join(f"⚠ {w}" for w in warnings) + "</div>"
 
-            # Tages-PnL pro Strategie (nur Trading-Tage, min. 4 pro Strategie)
+            # Tages-PnL pro Strategie (nur aktive Tage, min. 4 pro Strategie)
             MIN_PNL_DAYS = 4
             pnl_df_base = load_daily_pnl(conn, runtime_name, days=14)
             if not pnl_df_base.empty and "pnl_net" in pnl_df_base.columns:
                 content += f"<h2>{env_name} — Tages-PnL</h2>"
                 for strat in sorted(strategies):
-                    weekdays = strat_weekdays.get(strat)
-
                     # Mit 14 Tagen starten, bei Bedarf erweitern
                     strat_pnl = pnl_df_base[pnl_df_base["strategy_key"] == strat].copy()
-                    if weekdays:
-                        strat_pnl = strat_pnl[
-                            pd.DatetimeIndex(strat_pnl["date"]).weekday.isin(weekdays)
-                        ]
+                    strat_pnl = strat_pnl[strat_pnl["pnl_net"].abs() > 0.005]
 
                     if len(strat_pnl) < MIN_PNL_DAYS:
                         # Groesseres Fenster laden (7 Wochen deckt auch 1x/Woche ab)
@@ -564,11 +550,7 @@ def _page_performance() -> str:
                             conn, runtime_name, days=49, strategy_key=strat,
                         )
                         if not wider_df.empty:
-                            strat_pnl = wider_df.copy()
-                            if weekdays:
-                                strat_pnl = strat_pnl[
-                                    pd.DatetimeIndex(strat_pnl["date"]).weekday.isin(weekdays)
-                                ]
+                            strat_pnl = wider_df[wider_df["pnl_net"].abs() > 0.005].copy()
                             # Auf die letzten MIN_PNL_DAYS begrenzen
                             strat_pnl = strat_pnl.sort_values("date").tail(MIN_PNL_DAYS)
 

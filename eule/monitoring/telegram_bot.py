@@ -559,13 +559,42 @@ def handle_equity(args: str) -> str | None:
         return f"Chart-Fehler: {e}"
 
 
+def _nav_week_return(df_week, strategy: str) -> float | None:
+    """Wochen-Return einer Strategie aus den NAV-Endpunkten des 7-Tage-Fensters.
+
+    Ungefiltert (kein Weekday-Filter): das NAV-Delta enthaelt die Nicht-Trading-
+    Tage ohnehin als 0. None wenn weniger als 2 NAV-Punkte im Fenster liegen.
+    """
+    if df_week.empty:
+        return None
+    navs = df_week[df_week["strategy_key"] == strategy].sort_values("date")["nav_end"]
+    if len(navs) < 2 or not navs.iloc[0]:
+        return None
+    return float(navs.iloc[-1] / navs.iloc[0] - 1)
+
+
+def _portfolio_week_return(df_week) -> float | None:
+    """Wochen-Return des Gesamtportfolios aus NAV-basierten Tages-Returns."""
+    from eule.elster.data import portfolio_nav_returns
+
+    returns = portfolio_nav_returns(df_week)
+    if returns.empty:
+        return None
+    return float((1 + returns).prod() - 1)
+
+
 def collect_weekly_performance(args: str) -> list[dict] | str:
-    """Weekly-Performance-Daten (7 Tage) via Elster einsammeln.
+    """Weekly-Performance via Elster einsammeln.
+
+    Wochen-Return aus den NAV-Endpunkten der letzten 7 Tage (ungefiltert);
+    alle uebrigen Metriken (Sharpe, CAGR, MaxDD, WR, PF) ueber die gesamte
+    Laufzeit, gefiltert auf die Trading-Wochentage der Strategie.
 
     Returns strukturierte Daten fuer die Renderer in eule.monitoring.render:
-    pro Env {env, rows: [{strategy, total_return, sharpe, max_drawdown,
-    win_rate, profit_factor}], portfolio: {...}|None, warnings: [str],
-    note: str|None}. Bei Fehlern (DB, Imports) einen Fehlertext (str).
+    pro Env {env, rows: [{strategy, week_return, total_return, cagr, sharpe,
+    max_drawdown, win_rate, profit_factor}], portfolio: {...}|None,
+    warnings: [str], note: str|None}. Bei Fehlern (DB, Imports) einen
+    Fehlertext (str).
     """
     db_url = _load_database_url()
     if not db_url:
@@ -575,12 +604,13 @@ def collect_weekly_performance(args: str) -> list[dict] | str:
         import psycopg
 
         from eule.elster.data import (
-            filter_trading_days,
+            filter_active_days,
             get_trading_weekdays,
             list_strategies,
             load_baseline,
             load_daily_pnl,
             nav_to_returns,
+            portfolio_nav_returns,
             trading_periods_per_year,
         )
         from eule.elster.metrics import calculate_metrics
@@ -606,54 +636,41 @@ def collect_weekly_performance(args: str) -> list[dict] | str:
             if not strategies:
                 continue
 
-            df = load_daily_pnl(conn, runtime_name, days=7)
-            if df.empty:
-                result.append({"env": env_name, "note": "keine Daten (7d)"})
+            # Gesamte Laufzeit fuer Sharpe/CAGR/MaxDD/WR/PF,
+            # 7-Tage-Fenster nur fuer den Wochen-Return
+            df_full = load_daily_pnl(conn, runtime_name)
+            if df_full.empty:
+                result.append({"env": env_name, "note": "keine Daten"})
                 continue
 
-            returns_df = nav_to_returns(df)
+            returns_df = nav_to_returns(df_full)
             if returns_df.empty:
                 result.append({"env": env_name, "note": "zu wenig Daten"})
                 continue
 
+            df_week = load_daily_pnl(conn, runtime_name, days=7)
+
             rows: list[dict] = []
+            warnings: list[str] = []
             for strat in strategies:
                 if strat not in returns_df.columns:
                     continue
-                # Returns auf konfigurierte Trading-Tage filtern
-                strat_returns = returns_df[strat]
+                # Nur aktive Tage (Return != 0) — Weekday-Config nur fuer Annualisierung
+                strat_returns = filter_active_days(returns_df[strat])
                 weekdays = get_trading_weekdays(strat)
-                ppy = 252
-                if weekdays:
-                    strat_returns = filter_trading_days(strat_returns, weekdays)
-                    ppy = trading_periods_per_year(weekdays)
+                ppy = trading_periods_per_year(weekdays) if weekdays else 252
                 m = calculate_metrics(strat_returns, periods_per_year=ppy)
                 rows.append({
                     "strategy": strat,
+                    "week_return": _nav_week_return(df_week, strat),
                     "total_return": m.total_return,
+                    "cagr": m.annualized_return,
                     "sharpe": m.sharpe_ratio,
                     "max_drawdown": m.max_drawdown,
                     "win_rate": m.win_rate,
                     "profit_factor": m.profit_factor,
                 })
 
-            # Portfolio-Zeile
-            portfolio = None
-            avail = [c for c in returns_df.columns if c in strategies]
-            if len(avail) > 1:
-                pm = calculate_metrics(returns_df[avail].sum(axis=1))
-                portfolio = {
-                    "total_return": pm.total_return,
-                    "sharpe": pm.sharpe_ratio,
-                    "max_drawdown": pm.max_drawdown,
-                }
-
-            # Warnungen
-            warnings: list[str] = []
-            for strat in strategies:
-                if strat not in returns_df.columns:
-                    continue
-                m = calculate_metrics(returns_df[strat])
                 baseline = load_baseline(strat)
                 if baseline:
                     bl_wr = baseline.get("metrics", {}).get("win_rate", {})
@@ -661,6 +678,18 @@ def collect_weekly_performance(args: str) -> list[dict] | str:
                         warnings.append(f"{strat}: WR {m.win_rate:.0%} < warn {bl_wr['warn_below']:.0%}")
                 if 0 < m.profit_factor < 1.0:
                     warnings.append(f"{strat}: PF {m.profit_factor:.1f} < 1.0")
+
+            # Portfolio-Zeile (NAV-basiert, nicht Summe der Einzel-Returns)
+            portfolio = None
+            avail = [c for c in returns_df.columns if c in strategies]
+            if len(avail) > 1:
+                pm = calculate_metrics(portfolio_nav_returns(df_full))
+                portfolio = {
+                    "week_return": _portfolio_week_return(df_week),
+                    "total_return": pm.total_return,
+                    "sharpe": pm.sharpe_ratio,
+                    "max_drawdown": pm.max_drawdown,
+                }
 
             result.append({
                 "env": env_name,
