@@ -22,6 +22,7 @@
 
 ## Offen
 
+- [ ] **Reconciliation-Watchdog** — T+1-Abgleich Hase-DB vs. IBKR-Flex-Cashflows (Settlement-/Expiry-Check nach Vorfall 22.06.). Skizze: `docs/reconciliation-watchdog.md`
 - [ ] **ibkr-two (LYNX)** — ibind kann nur eine Connection pro Prozess. Braucht separaten Aufruf oder Subprocess-Isolation.
 - [ ] **EXSA.DE Entry-Preis** — €280.25 passt nicht zum aktuellen Kurs ~€58. Aktiensplit oder falsche Share Class pruefen.
 - [ ] **Bond Live-Kurse** — Aktuell manuell in YAML. Perspektivisch: Boerse Frankfurt API oder aehnlich.
