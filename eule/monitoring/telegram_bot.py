@@ -878,10 +878,9 @@ def handle_flogs(env: str) -> str:
     err = _validate_env(env)
     if err:
         return err
-    if env.startswith("real"):
-        log_base = Path.home() / "hase" / "werkstatt" / "logs"
-    else:
-        log_base = Path.home() / "staging" / "werkstatt" / "logs"
+    from eule.monitoring.precheck import werkstatt_logs_dir
+
+    log_base = werkstatt_logs_dir(env)
     pattern = str(log_base / f"hase_{env}_RUNTIME_*.log")
     files = sorted(glob_mod.glob(pattern), key=os.path.getmtime, reverse=True)
     if not files:

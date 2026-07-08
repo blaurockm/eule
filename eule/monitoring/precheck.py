@@ -58,6 +58,29 @@ _FUCHS_CONFIG_PATHS = {
     "staging": "fuchs-config.staging.json",
 }
 
+# Container-Mount der staging-Runtimes (Containerisierung 2026-07-08): beide
+# staging-Container binden ihr /app/werkstatt hierhin. real-* laeuft weiter nativ.
+_STAGING_WERKSTATT = Path("/srv/hase/staging/werkstatt")
+
+
+def werkstatt_logs_dir(env_name: str) -> Path:
+    """Runtime-Log-Verzeichnis (Logs, EOD-JSONs) fuer ein Env.
+
+    staging-* schreibt in den Container-Host-Mount /srv/hase/staging/werkstatt,
+    real-* nativ unter ~/hase. Override via EULE_HASE_DIR (Tests/Entwicklung).
+    """
+    override = os.environ.get("EULE_HASE_DIR")
+    if override:
+        return Path(override) / "werkstatt" / "logs"
+    if env_name.startswith("staging"):
+        return _STAGING_WERKSTATT / "logs"
+    return Path.home() / "hase" / "werkstatt" / "logs"
+
+
+def all_werkstatt_logs_dirs() -> list[Path]:
+    """Alle Runtime-Log-Verzeichnisse (dedupliziert), fuer env-uebergreifende Globs."""
+    return sorted({werkstatt_logs_dir(env) for env in ENVIRONMENTS})
+
 
 def _fuchs_config_path(env_name: str) -> Path:
     """Return path to the Fuchs config file responsible for env_name.
@@ -577,14 +600,7 @@ def check_environment(env_name: str, env_config: dict, baselines: dict) -> list[
 
     # 5. Broker log health check — scan for critical broker errors
     # These errors indicate the broker connection is broken and strategies cannot trade
-    hase_override = os.environ.get("EULE_HASE_DIR")
-    if hase_override:
-        hase_dir = Path(hase_override)
-    elif env_name.startswith("staging"):
-        hase_dir = Path.home() / "staging"
-    else:
-        hase_dir = Path.home() / "hase"
-    broker_log_dir = hase_dir / "werkstatt" / "logs"
+    broker_log_dir = werkstatt_logs_dir(env_name)
     today_str = datetime.now(ZoneInfo("Europe/Berlin")).strftime("%Y%m%d")
     broker_log_pattern = f"BrokerIBKR_{env_name}_{today_str}*.log"
     broker_logs = sorted(broker_log_dir.glob(broker_log_pattern))
@@ -683,16 +699,8 @@ def _strategy_market_close_utc(
 
 def _eod_summary_path(env_name: str, today_str: str) -> Path | None:
     """Path to today's end_of_day daily-summary JSON for an env, if it exists."""
-    hase_override = os.environ.get("EULE_HASE_DIR")
-    production_dir = Path(hase_override) if hase_override else Path.home() / "hase"
-    candidates = [
-        Path.home() / "staging" / "werkstatt" / "logs" / f"daily-summary-{env_name}-{today_str}.json",
-        production_dir / "werkstatt" / "logs" / f"daily-summary-{env_name}-{today_str}.json",
-    ]
-    for p in candidates:
-        if p.exists():
-            return p
-    return None
+    p = werkstatt_logs_dir(env_name) / f"daily-summary-{env_name}-{today_str}.json"
+    return p if p.exists() else None
 
 
 def eod_deadline(env_name: str) -> time:
@@ -1073,12 +1081,7 @@ def run_precheck(force_summary: bool = False) -> tuple[int, str]:
         import json
 
         today_str = datetime.now(ZoneInfo("Europe/Berlin")).strftime("%Y-%m-%d")
-        hase_override = os.environ.get("EULE_HASE_DIR")
-        production_dir = Path(hase_override) if hase_override else Path.home() / "hase"
-        log_dirs = [
-            Path.home() / "staging" / "werkstatt" / "logs",  # staging
-            production_dir / "werkstatt" / "logs",  # production
-        ]
+        log_dirs = all_werkstatt_logs_dirs()
 
         # Collect summary JSONs written by runtime end_of_day
         summary_files = {}

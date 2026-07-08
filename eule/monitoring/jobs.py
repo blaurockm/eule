@@ -34,12 +34,9 @@ def _load_daily_summary_jsons(date_str: str) -> dict[str, dict]:
     Keyed by env name. Production schreibt ~22:30 Berlin, staging-ibkr ~23:30
     (zum Handelsende), staging-hl ~23:59.
     """
-    hase_override = os.environ.get("EULE_HASE_DIR")
-    production_dir = Path(hase_override) if hase_override else Path.home() / "hase"
-    log_dirs = [
-        Path.home() / "staging" / "werkstatt" / "logs",
-        production_dir / "werkstatt" / "logs",
-    ]
+    from eule.monitoring.precheck import all_werkstatt_logs_dirs
+
+    log_dirs = all_werkstatt_logs_dirs()
     result: dict[str, dict] = {}
     for log_dir in log_dirs:
         for f in sorted(log_dir.glob(f"daily-summary-*-{date_str}.json")):
