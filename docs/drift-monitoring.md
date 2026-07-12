@@ -75,21 +75,31 @@ Exit-Code 1 bei Warnungen. Ein Cron lohnt damit nicht mehr — das Script
 ist Teil der jaehrlichen Review-Routine. Kontinuierlich laufen nur
 Stufe A (Wachtel) und perspektivisch Stufe C.
 
-### Stufe C — Fill-basierte Checks (blockiert durch Hase-TODO)
+### Stufe C — Fill-basierte Checks (Hase-Fix umgesetzt 2026-07-12)
 
-Zwischen den Datenfenstern liesse sich der Premium-Anker und der
-Cap-Durchschlag-Check aus den **Live-Trades selbst** speisen (jede Woche
-ein Datenpunkt: gewaehlter Strike vs. Spot bei Entry, Settlement-Tiefe vs.
-Hedge-Breite). Dazu muesste Hase pro Trade persistieren:
+Zwischen den Datenfenstern speisen sich Premium-Anker- und
+Cap-Durchschlag-Check aus den **Live-Trades selbst** (jede Woche ein
+Datenpunkt: gewaehlter Strike vs. Spot bei Entry, Settlement-Tiefe vs.
+Hedge-Breite).
 
-- Short-Strike und Hedge-Strike (aktuell steht in `trades` nur `spx_opt`)
-- Hedge-Entry-Fill (aktuell gar nicht gebucht)
-- Underlying-Kurs bei Entry (fuer OTM%)
+Der Hase-Fix ist umgesetzt (Root Cause: Combo-Legs teilten sich die
+Broker-Order-ID, der Hedge-Entry wurde per ON-CONFLICT-Dedupe verworfen;
+`trade_ref` ist jetzt `trade_id|order_id`; neues Feld `underlying_price`
+auf Order/Trade):
 
-Haengt am Hase-TODO "Hedge-Entry wird nicht in trades-Tabelle gebucht"
-(hase/TODO.md, 2026-07-12) — dort um Strike/Entry-Spot-Persistenz erweitert.
-Sobald das steht, kann Wachtel/Eule diese Checks woechentlich rechnen,
-ganz ohne Options-Datenabo.
+- Hedge-Entry-Fill wird gebucht -> Netto-Credit aus der DB korrekt
+  (vorher ~3x ueberzeichnet am Di, ~1.5x am Mo)
+- Underlying-Kurs bei Entry -> Premium/Spot-Drift direkt aus Fills
+
+**Wirksam erst fuer Trades nach dem Deploy** — historische Zeilen bleiben
+ohne Hedge-Entry. Eule-Auswertungen muessen Alt-Zeitraeume entsprechend
+behandeln (Netto-Credit vor Deploy-Datum ist Brutto).
+
+**Noch zu verifizieren** (fuer OTM%- und Cap-Durchschlag-Check): ob die
+`symbol`-Spalte jetzt den Leg-Kontraktnamen (mit Strike) traegt oder
+weiterhin nur den Universe-Key `spx_opt` (`t.key or t.product.name` —
+haengt davon ab, was am Leg-Trade gesetzt ist). Ohne Strike in der DB
+bleibt fuer diese beiden Checks nur das Jahres-Datenfenster (Stufe B).
 
 ## Warum keine %-Definition direkt in Hase?
 
