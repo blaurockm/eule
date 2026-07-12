@@ -22,6 +22,10 @@
 
 ## Offen
 
+- [ ] **Drift-Monitoring silbern-marder** — Hedge-Breiten-Drift-Check als Baseline-Feld
+  (`drift.hedge_width_pct`) in Precheck/Wachtel integrieren; Quartals-Review laeuft als
+  `dachs/research/silbern-marder/review_drift.py`. Spec: `docs/drift-monitoring.md`
+
 - [ ] **Reconciliation-Watchdog** — T+1-Abgleich Hase-DB vs. IBKR-Flex-Cashflows (Settlement-/Expiry-Check nach Vorfall 22.06.). Skizze: `docs/reconciliation-watchdog.md`
 - [ ] **ibkr-two (LYNX)** — ibind kann nur eine Connection pro Prozess. Braucht separaten Aufruf oder Subprocess-Isolation.
 - [ ] **EXSA.DE Entry-Preis** — €280.25 passt nicht zum aktuellen Kurs ~€58. Aktiensplit oder falsche Share Class pruefen.
