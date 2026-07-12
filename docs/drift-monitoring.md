@@ -53,31 +53,43 @@ Precheck-Erweiterung: `spread_distance` aus der Strategie-JSON lesen,
 durch aktuellen SPX teilen, gegen `target` pruefen, bei WARN einen
 gerundeten Punkte-Vorschlag ausgeben (5pt-Raster).
 
-### Stufe B — Quartals-Review (DACHS-Script)
+### Stufe B — Jahres-Review (DACHS-Script, Datenfenster)
 
-Die restlichen Checks brauchen Options-Chain-Daten (Hamster) und laufen
-als `dachs/research/silbern-marder/review_drift.py`:
+**Randbedingung (2026-07):** Das Massive-Abo (Polygon Flat-Files,
+`options_intraday`) ist gekuendigt. Frische Optionsdaten gibt es nur noch
+in einem bewussten Datenfenster: einmal jaehrlich 1 Monat Massive abonnieren,
+Flat-Files fuer die Luecke backfillen (Massive liefert waehrend des Abos
+die komplette Historie — beim ersten Re-Abo verifizieren!), Hamster-Import,
+dann das Review-Script laufen lassen.
 
-1. Hedge-Breiten-Drift (wie Stufe A, alle Strategien)
+`dachs/research/silbern-marder/review_drift.py`:
+
+1. Hedge-Breiten-Drift (wie Stufe A, alle Strategien) — laeuft jederzeit
 2. Premium-Anker: OTM% + Premium/Spot der letzten 26 Entries
-   (Spot parity-implizit aus der Chain)
+   (Spot parity-implizit aus der Chain) — nur im Datenfenster aktuell
 3. Breiten-Sweep letzte 24 Monate: Credit/Verlierer/Cap-Durchschlaege je
    Uniform-Breite; WARN wenn >=2 Verlierer in 12M die aktive Breite
-   durchschlagen (Semantik-Drift des Hedges)
+   durchschlagen — nur im Datenfenster aktuell
 
-Exit-Code 1 bei Warnungen -> cron-tauglich. Voraussetzung fuer
-Automatisierung: Maschine mit frischen Hamster-Optionsdaten (offene Frage:
-Tower vs. systematic — MacBook-Kopie ist typisch Wochen alt).
+Exit-Code 1 bei Warnungen. Ein Cron lohnt damit nicht mehr — das Script
+ist Teil der jaehrlichen Review-Routine. Kontinuierlich laufen nur
+Stufe A (Wachtel) und perspektivisch Stufe C.
 
-### Blockiert / Abhaengigkeiten
+### Stufe C — Fill-basierte Checks (blockiert durch Hase-TODO)
 
-- **Premium-Anker aus Live-Fills** statt Hamster waere schoener, geht aber
-  nicht: die Hase-`trades`-Tabelle enthaelt weder Strike noch Hedge-Entry
-  (Symbol ist nur `spx_opt`). Haengt am Hase-TODO "Hedge-Entry wird nicht
-  in trades-Tabelle gebucht" (hase/TODO.md, 2026-07-12).
-- **Fill-Qualitaets-Check** (Live-Hedge-Fills vs. Backtest-Grid): ebenfalls
-  durch fehlendes Hedge-Booking blockiert; Log-basierte Rekonstruktion
-  rotiert nach ~2 Wochen weg.
+Zwischen den Datenfenstern liesse sich der Premium-Anker und der
+Cap-Durchschlag-Check aus den **Live-Trades selbst** speisen (jede Woche
+ein Datenpunkt: gewaehlter Strike vs. Spot bei Entry, Settlement-Tiefe vs.
+Hedge-Breite). Dazu muesste Hase pro Trade persistieren:
+
+- Short-Strike und Hedge-Strike (aktuell steht in `trades` nur `spx_opt`)
+- Hedge-Entry-Fill (aktuell gar nicht gebucht)
+- Underlying-Kurs bei Entry (fuer OTM%)
+
+Haengt am Hase-TODO "Hedge-Entry wird nicht in trades-Tabelle gebucht"
+(hase/TODO.md, 2026-07-12) — dort um Strike/Entry-Spot-Persistenz erweitert.
+Sobald das steht, kann Wachtel/Eule diese Checks woechentlich rechnen,
+ganz ohne Options-Datenabo.
 
 ## Warum keine %-Definition direkt in Hase?
 
