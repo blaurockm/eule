@@ -58,23 +58,25 @@ _FUCHS_CONFIG_PATHS = {
     "staging": "fuchs-config.staging.json",
 }
 
-# Container-Mount der staging-Runtimes (Containerisierung 2026-07-08): beide
-# staging-Container binden ihr /app/werkstatt hierhin. real-* laeuft weiter nativ.
+# Container-Mounts der Runtimes (Containerisierung: staging 2026-07-08, prod/Phase 5
+# 2026-07-15): jeder Container bindet sein /app/werkstatt an den jeweiligen Host-Mount.
 _STAGING_WERKSTATT = Path("/srv/hase/staging/werkstatt")
+_PROD_WERKSTATT = Path("/srv/hase/prod/werkstatt")
 
 
 def werkstatt_logs_dir(env_name: str) -> Path:
     """Runtime-Log-Verzeichnis (Logs, EOD-JSONs) fuer ein Env.
 
-    staging-* schreibt in den Container-Host-Mount /srv/hase/staging/werkstatt,
-    real-* nativ unter ~/hase. Override via EULE_HASE_DIR (Tests/Entwicklung).
+    staging-* -> Container-Host-Mount /srv/hase/staging/werkstatt,
+    real-* -> Container-Host-Mount /srv/hase/prod/werkstatt (beide prod-Envs teilen ihn;
+    Log-Dateinamen tragen den Env-Namen). Override via EULE_HASE_DIR (Tests/Entwicklung).
     """
     override = os.environ.get("EULE_HASE_DIR")
     if override:
         return Path(override) / "werkstatt" / "logs"
     if env_name.startswith("staging"):
         return _STAGING_WERKSTATT / "logs"
-    return Path.home() / "hase" / "werkstatt" / "logs"
+    return _PROD_WERKSTATT / "logs"
 
 
 def all_werkstatt_logs_dirs() -> list[Path]:
