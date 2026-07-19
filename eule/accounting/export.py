@@ -107,7 +107,8 @@ def write_balances_json(
     """Schreibt balances.json fuer die Vercel-App.
 
     Struktur:
-      global   — fuer alle Holder gleich (Broker-Gesamt, Brutto-PnL, CAGR, ...)
+      global   — fuer alle Holder gleich (Broker-Gesamt, Brutto-PnL, CAGR,
+                 holder_balances mit Saldo je Holder, ...)
       tokens   — pro Token: Holder-Anteil an PnL/Kosten (absolut + Prozent)
     """
     tokens = load_tokens()
@@ -125,6 +126,15 @@ def write_balances_json(
         "global": {
             **metrics,
             "currency": cfg.base_currency,
+            "holder_balances": {
+                holder_id: {
+                    "name": b.name,
+                    "balance": _r(b.balance),
+                    "balance_broker": _r(b.balance_broker),
+                    "balance_giro": _r(b.balance_giro),
+                }
+                for holder_id, b in sorted(balances.items())
+            },
             "recent_trades": recent,
         },
         "tokens": {},
