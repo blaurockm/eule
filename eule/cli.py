@@ -13,6 +13,7 @@ import typer
 from eule.accounting import cli as accounting
 from eule.bestand import cli as bestand
 from eule.bewertung import cli as bewertung
+from eule.citrini import cli as citrini
 from eule.pipeline import cli as pipeline
 from eule.betrieb import cli as betrieb
 
@@ -41,6 +42,7 @@ app.command(name="pnl-override")(bewertung.pnl_override)
 
 # ── Pipeline: Was kommt als naechstes? ───────────────
 app.add_typer(pipeline.ep_app)
+app.add_typer(citrini.citrini_app)
 
 # ── Betrieb: Laeuft alles? ──────────────────────────
 app.add_typer(betrieb.config_app)
