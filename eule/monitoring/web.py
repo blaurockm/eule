@@ -6,15 +6,21 @@ Datenfunktionen wie die CLI auf und rendert HTML.
 """
 
 import json
+import mimetypes
+import os
+import re
 import traceback
 from datetime import datetime
+from html import escape
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 
 from loguru import logger as log
 
 
 DEFAULT_PORT = 8780
+DEFAULT_BIND = "0.0.0.0"
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +61,34 @@ tr:hover { background: #161b22; }
 details { margin-bottom: 0.3rem; }
 summary { cursor: pointer; padding: 0.4rem 0; font-size: 0.9rem; }
 summary:hover { color: #58a6ff; }
+a { color: #58a6ff; }
+pre { background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      padding: 0.8rem; overflow-x: auto; font-size: 0.8rem; }
+.env { background: #161b22; border: 1px solid #30363d; border-left: 4px solid #30363d;
+       border-radius: 8px; padding: 0.8rem 1.2rem 1.2rem; margin-bottom: 1.2rem; }
+.env-prod { border-color: #f85149; }
+.env h2 { margin-top: 0.5rem; }
+.badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px;
+         font-size: 0.7rem; letter-spacing: 0.05em; text-transform: uppercase;
+         background: #21262d; color: #8b949e; vertical-align: middle; }
+.badge-prod { background: #3d1214; color: #f85149; border: 1px solid #f85149; }
+.strat { border-top: 1px solid #30363d; padding: 0.9rem 0 0.3rem; }
+.strat-name { font-size: 1rem; font-weight: 600; color: #f0f6fc; }
+.status-msg { font-size: 1rem; color: #f0f6fc; margin: 0.4rem 0; }
+.strat-meta { color: #8b949e; font-size: 0.8rem; margin-bottom: 0.4rem; }
+.actions { display: flex; gap: 0.4rem; flex-wrap: wrap; margin: 0.6rem 0 0.2rem; }
+.actions form { margin: 0; }
+button { font-family: inherit; font-size: 0.85rem; padding: 0.55rem 0.9rem;
+         min-height: 2.6rem; border-radius: 6px; background: #21262d; color: #c9d1d9;
+         border: 1px solid #30363d; cursor: pointer; }
+button:hover { background: #30363d; color: #58a6ff; }
+button.danger { border-color: #f85149; color: #f85149; }
+button.danger:hover { background: #3d1214; color: #f85149; }
+button[disabled] { opacity: 0.35; cursor: not-allowed; }
+.ok-block { background: #12261a; border: 1px solid #3fb950; color: #3fb950;
+            padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
+.warn-block { background: #2b2411; border: 1px solid #d29922; color: #d29922;
+              padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
 """
 
 _NAV_ITEMS = [
@@ -66,6 +100,8 @@ _NAV_ITEMS = [
     ("/schedule", "Schedule"),
     ("/precheck", "Precheck"),
     ("/ep", "EP-Trades"),
+    ("/hase", "Hase"),
+    ("/docs/", "Docs"),
 ]
 
 
@@ -584,6 +620,403 @@ def _page_performance() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Hase-Steuerung (/hase)
+# ---------------------------------------------------------------------------
+
+# Lese-Calls sollen die Seite nicht blockieren wenn eine Runtime steht.
+HASE_READ_TIMEOUT = 1.5
+# Steuer-Calls: die Control-API wartet selbst bis 5s auf den Worker-Thread.
+HASE_ACTION_TIMEOUT = 10.0
+
+HASE_ACTIONS = ("pause", "resume", "disable", "combos", "flatten", "kill")
+HASE_DESTRUCTIVE_ACTIONS = ("flatten", "kill")
+
+_STRATEGY_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def _hase_environments() -> dict:
+    """Env -> {"port": int, "tier": str}. Single source of truth ist precheck."""
+    from eule.monitoring.precheck import ENVIRONMENTS
+
+    return ENVIRONMENTS
+
+
+def _hase_get(port: int, endpoint: str):
+    """GET auf die lokale Runtime-API. None wenn nicht erreichbar."""
+    import requests
+
+    try:
+        resp = requests.get(f"http://127.0.0.1:{port}{endpoint}", timeout=HASE_READ_TIMEOUT)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        return None
+
+
+def _hase_post(port: int, endpoint: str, body: dict | None = None) -> tuple[int | None, object]:
+    """POST auf die lokale Runtime-API.
+
+    Returns (status_code, payload). status_code None = API nicht erreichbar,
+    payload ist dann die Fehlermeldung. Sonst geparstes JSON oder roher Text.
+    """
+    import requests
+
+    try:
+        resp = requests.post(
+            f"http://127.0.0.1:{port}{endpoint}", json=body, timeout=HASE_ACTION_TIMEOUT
+        )
+    except Exception as e:
+        return None, str(e)
+    try:
+        return resp.status_code, resp.json()
+    except ValueError:
+        return resp.status_code, resp.text
+
+
+def _pretty(payload) -> str:
+    if isinstance(payload, str):
+        return payload
+    return json.dumps(payload, indent=2, ensure_ascii=False, default=str)
+
+
+def _detail(payload) -> str:
+    """Fehlertext aus einer FastAPI-Antwort ({"detail": ...}) ziehen."""
+    if isinstance(payload, dict) and "detail" in payload:
+        d = payload["detail"]
+        return d if isinstance(d, str) else json.dumps(d, ensure_ascii=False, default=str)
+    return _pretty(payload)
+
+
+def validate_hase_action(form: dict) -> str | None:
+    """Prueft eine Steuer-Anfrage. Gibt Fehlermeldung zurueck oder None wenn ok."""
+    env = form.get("env", "")
+    strategy = form.get("strategy", "")
+    action = form.get("action", "")
+
+    if env not in _hase_environments():
+        return f"Unbekanntes Environment: {env!r}"
+    if not _STRATEGY_NAME_RE.match(strategy):
+        return f"Ungueltiger Strategie-Name: {strategy!r}"
+    if action not in HASE_ACTIONS:
+        return f"Unbekannte Aktion: {action!r}"
+    if action == "combos":
+        value = form.get("value", "")
+        if not re.fullmatch(r"\d{1,3}", value):
+            return f"Ungueltiger Wert fuer num_combos: {value!r}"
+    return None
+
+
+def _hase_back_link() -> str:
+    return '<p><a href="/hase">&larr; zurueck zur Steuerung</a></p>'
+
+
+def _action_form(env: str, strategy: str, action: str, label: str, cls: str = "",
+                 value: str | None = None, confirm: bool = False,
+                 disabled: bool = False) -> str:
+    """Ein Button = ein Mini-Formular (Aktionen laufen nie ueber GET)."""
+    hidden = (
+        f'<input type="hidden" name="env" value="{escape(env, quote=True)}">'
+        f'<input type="hidden" name="strategy" value="{escape(strategy, quote=True)}">'
+        f'<input type="hidden" name="action" value="{escape(action, quote=True)}">'
+    )
+    if value is not None:
+        hidden += f'<input type="hidden" name="value" value="{escape(value, quote=True)}">'
+    if confirm:
+        hidden += '<input type="hidden" name="confirm" value="yes">'
+    dis = " disabled" if disabled else ""
+    return (
+        f'<form method="post" action="/hase/action">{hidden}'
+        f'<button type="submit" class="{cls}"{dis}>{label}</button></form>'
+    )
+
+
+def _render_hase_strategy(env: str, port: int, strat: dict, positions: list, pending: list) -> str:
+    """Eine Strategie-Zeile inkl. Live-Stand und Aktions-Buttons."""
+    name = strat.get("name") or strat.get("class") or "?"
+    display = strat.get("display") or {}
+    health = strat.get("health") or {}
+    stats = strat.get("stats") or {}
+    worker = strat.get("worker") or {}
+
+    fsm = display.get("fsm_state") or "—"
+    status_msg = display.get("status_message") or "—"
+    next_action = display.get("next_action_time")
+
+    parts = [f'<div class="strat"><div class="strat-name">{escape(str(name))} '
+             f'<span class="badge">{escape(str(fsm))}</span></div>']
+    parts.append(f'<div class="status-msg">{escape(str(status_msg))}</div>')
+
+    meta = []
+    if next_action:
+        meta.append(f"naechste Aktion: {escape(str(next_action))}")
+    if strat.get("is_active_today") is False:
+        meta.append("heute kein Trading-Tag")
+    if worker and worker.get("alive") is False:
+        meta.append('<span class="red">Worker-Thread tot</span>')
+    realized = stats.get("realized_pnl")
+    unrealized = stats.get("unrealized_pnl")
+    if realized is not None or unrealized is not None:
+        meta.append(
+            f"PnL heute: realized {_color(float(realized or 0.0), fmt='+,.2f')} / "
+            f"unrealized {_color(float(unrealized or 0.0), fmt='+,.2f')}"
+        )
+    if stats.get("trades_count"):
+        meta.append(f"Trades: {stats['trades_count']}")
+    if meta:
+        parts.append(f'<div class="strat-meta">{" &middot; ".join(meta)}</div>')
+
+    problems = health.get("problems") or []
+    if problems:
+        parts.append(_error_block("<br>".join(escape(str(p)) for p in problems)))
+
+    # Positionen dieser Strategie (Attribution ueber strategy_key)
+    own_pos = [p for p in positions if p.get("strategy_key") == name]
+    if own_pos:
+        rows = []
+        for p in own_pos:
+            prod = p.get("product") or {}
+            label = p.get("key") or prod.get("instr") or p.get("broker_id") or "?"
+            strike = prod.get("strike")
+            if strike is not None:
+                label = f"{label} {prod.get('option_type', '')} {strike}"
+            rows.append([
+                escape(str(label)),
+                f"{float(p.get('curr_count') or 0.0):,.0f}",
+                f"{float(p.get('curr_price') or 0.0):,.2f}",
+                _color(float(p.get("daily_pnl") or 0.0), fmt="+,.2f"),
+            ])
+        parts.append(_table(["Position", "Stueck", "Kurs", "PnL"], rows, ["l", "r", "r", "r"]))
+
+    own_pending = [o for o in pending if o.get("strategy_key") == name]
+    if own_pending:
+        rows = []
+        for o in own_pending:
+            rows.append([
+                escape(str(o.get("order_id") or "?")),
+                escape(str(o.get("instr_key") or "")),
+                escape(str(o.get("side") or "")),
+                f"{float(o.get('size') or 0.0):,.0f}",
+                escape(str(o.get("broker_state") or "")),
+            ])
+        parts.append(_table(["Order", "Instrument", "Seite", "Menge", "Status"], rows,
+                            ["l", "l", "l", "r", "l"]))
+
+    # Aktionen
+    buttons = [
+        _action_form(env, name, "pause", "Pause"),
+        _action_form(env, name, "resume", "Resume"),
+        _action_form(env, name, "disable", "Disable"),
+    ]
+
+    # Combos +/-: aktuellen Wert und Bounds aus der Control-API holen
+    params_info = _hase_get(port, f"/strategy/{name}/params") or {}
+    mutable = params_info.get("mutable") or {}
+    params = params_info.get("params") or strat.get("params") or {}
+    spec = mutable.get("num_combos")
+    if spec:
+        try:
+            current = int(params.get("num_combos"))
+        except (TypeError, ValueError):
+            current = None
+        lo = spec.get("min")
+        hi = spec.get("max")
+        if current is not None:
+            bounds = f" ({lo}–{hi})" if lo is not None and hi is not None else ""
+            buttons.append(
+                _action_form(env, name, "combos", "&minus;", value=str(current - 1),
+                             disabled=lo is not None and current - 1 < lo)
+            )
+            buttons.append(
+                f'<button type="button" disabled>num_combos: {current}{bounds}</button>'
+            )
+            buttons.append(
+                _action_form(env, name, "combos", "+", value=str(current + 1),
+                             disabled=hi is not None and current + 1 > hi)
+            )
+
+    buttons.append(_action_form(env, name, "flatten", "Flatten…", cls="danger"))
+    buttons.append(_action_form(env, name, "kill", "Kill…", cls="danger"))
+    parts.append(f'<div class="actions">{"".join(buttons)}</div>')
+
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _render_hase_env(env_name: str, meta: dict) -> str:
+    """Karte fuer ein Environment. Nicht erreichbare API ist kein Fehlerfall."""
+    port = meta.get("port")
+    is_prod = meta.get("tier") == "production"
+    cls = "env env-prod" if is_prod else "env"
+    badge = ('<span class="badge badge-prod">Echtgeld</span>' if is_prod
+             else f'<span class="badge">{escape(str(meta.get("tier", "")))}</span>')
+    head = f'<h2>{escape(env_name)} <span class="dim">:{port}</span> {badge}</h2>'
+
+    strategies = _hase_get(port, "/strategies")
+    if strategies is None:
+        return (f'<div class="{cls}">{head}'
+                '<p class="dim">API nicht erreichbar (Runtime gestoppt?)</p></div>')
+
+    portfolio = _hase_get(port, "/portfolio") or {}
+    orders = _hase_get(port, "/debug/orders/pending") or {}
+    positions = portfolio.get("positions") or []
+    pending = orders.get("haendler_pending") or []
+
+    body = [head]
+
+    cash = portfolio.get("cash") or {}
+    pnl = portfolio.get("pnl") or {}
+    if cash or pnl:
+        currency = cash.get("currency", "")
+        cards = [
+            _card("Cash", f"{float(cash.get('current_cash') or 0.0):,.0f} {currency}"),
+            _card("Realized heute", f"{float(pnl.get('daily_realized_pnl') or 0.0):+,.0f}",
+                  "green" if float(pnl.get("daily_realized_pnl") or 0.0) >= 0 else "red"),
+            _card("Unrealized heute", f"{float(pnl.get('daily_unrealized_pnl') or 0.0):+,.0f}",
+                  "green" if float(pnl.get("daily_unrealized_pnl") or 0.0) >= 0 else "red"),
+            _card("Positionen", str(portfolio.get("positions_count", len(positions)))),
+        ]
+        body.append(f'<div class="cards">{"".join(cards)}</div>')
+
+    if not strategies:
+        body.append('<p class="dim">Keine Strategien geladen (Monitoring-Modus?).</p>')
+    for strat in strategies:
+        body.append(_render_hase_strategy(env_name, port, strat, positions, pending))
+
+    return f'<div class="{cls}">{"".join(body)}</div>'
+
+
+def _page_hase() -> str:
+    envs = _hase_environments()
+    parts = [_render_hase_env(name, meta) for name, meta in envs.items()]
+    parts.append('<div class="meta">Aktionen wirken sofort auf die laufende Runtime. '
+                 "Flatten und Kill zeigen zuerst eine Dry-Run-Vorschau. "
+                 "Param-Aenderungen lehnt die Runtime bei offener Position ab (409).</div>")
+    return _page("Hase", "\n".join(parts), "/hase")
+
+
+def _hase_result_page(env: str, strategy: str, action: str, status: int | None, payload) -> str:
+    title = f"{action} — {strategy}"
+    if status is None:
+        body = _error_block(f"API von {escape(env)} nicht erreichbar: {escape(str(payload))}")
+    elif status == 200:
+        body = (f'<div class="ok-block">OK — <b>{escape(action)}</b> auf '
+                f"<b>{escape(strategy)}</b> ({escape(env)})</div>")
+        body += f"<pre>{escape(_pretty(payload))}</pre>"
+    elif status == 409:
+        body = (f'<div class="warn-block">Im aktuellen Zustand nicht erlaubt (409): '
+                f"{escape(_detail(payload))}</div>")
+    else:
+        body = _error_block(f"Fehler {status}: {escape(_detail(payload))}")
+    return _page(title, body + _hase_back_link(), "/hase")
+
+
+def _hase_dryrun_page(env: str, strategy: str, action: str, status: int | None, payload) -> str:
+    """Vorschau-Seite fuer flatten/kill mit Bestaetigungs-Formular."""
+    if status != 200:
+        return _hase_result_page(env, strategy, action, status, payload)
+
+    data = payload if isinstance(payload, dict) else {}
+    inner = data.get("flatten") if action == "kill" and isinstance(data.get("flatten"), dict) else data
+    to_close = inner.get("positions_to_close") or []
+    to_cancel = inner.get("pending_to_cancel") or []
+
+    body = [f'<div class="warn-block">Vorschau (dry run) fuer <b>{escape(action)}</b> auf '
+            f"<b>{escape(strategy)}</b> in <b>{escape(env)}</b>. Es wurde noch nichts "
+            "ausgefuehrt.</div>"]
+
+    if to_close:
+        rows = [[escape(str(p.get("key") or p.get("broker_id") or "?")),
+                 escape(str(p.get("side") or "")),
+                 f"{float(p.get('size') or 0.0):,.0f}"] for p in to_close]
+        body.append("<h2>Positionen die geschlossen werden</h2>")
+        body.append(_table(["Position", "Gegen-Seite", "Menge"], rows, ["l", "l", "r"]))
+    if to_cancel:
+        rows = [[escape(str(o.get("order_id") or "?")),
+                 escape(str(o.get("side") or "")),
+                 f"{float(o.get('size') or 0.0):,.0f}"] for o in to_cancel]
+        body.append("<h2>Orders die gecancelt werden</h2>")
+        body.append(_table(["Order", "Seite", "Menge"], rows, ["l", "l", "r"]))
+    if not to_close and not to_cancel:
+        body.append('<p class="dim">Nichts zu tun — keine offenen Positionen, keine '
+                    "pending Orders.</p>")
+    if action == "kill":
+        body.append('<p>Zusaetzlich wird die Strategie fuer den Rest des Tages '
+                    "<b>disabled</b>.</p>")
+
+    body.append(f"<pre>{escape(_pretty(payload))}</pre>")
+    body.append('<div class="actions">')
+    body.append(_action_form(env, strategy, action, f"{action} jetzt ausfuehren",
+                             cls="danger", confirm=True))
+    body.append('</div>')
+    body.append(_hase_back_link())
+    return _page(f"{action} — Vorschau", "".join(body), "/hase")
+
+
+def handle_hase_action(form: dict) -> str:
+    """Fuehrt eine Steuer-Aktion aus und rendert die Ergebnis-Seite."""
+    err = validate_hase_action(form)
+    if err:
+        return _page("Steuerung", _error_block(escape(err)) + _hase_back_link(), "/hase")
+
+    env = form["env"]
+    strategy = form["strategy"]
+    action = form["action"]
+    port = _hase_environments()[env]["port"]
+
+    if action == "combos":
+        status, payload = _hase_post(port, f"/strategy/{strategy}/params",
+                                     body={"num_combos": int(form["value"])})
+        return _hase_result_page(env, strategy, action, status, payload)
+
+    if action in HASE_DESTRUCTIVE_ACTIONS and form.get("confirm") != "yes":
+        status, payload = _hase_post(port, f"/strategy/{strategy}/{action}?dry_run=true")
+        return _hase_dryrun_page(env, strategy, action, status, payload)
+
+    status, payload = _hase_post(port, f"/strategy/{strategy}/{action}")
+    return _hase_result_page(env, strategy, action, status, payload)
+
+
+# ---------------------------------------------------------------------------
+# Statische Docs (/docs/)
+# ---------------------------------------------------------------------------
+
+DEFAULT_DOCS_DIR = "/srv/hase/docs-site"
+
+
+def docs_dir() -> Path:
+    """Basis-Verzeichnis der gebauten MkDocs-Site."""
+    return Path(os.environ.get("EULE_DOCS_DIR", DEFAULT_DOCS_DIR))
+
+
+def resolve_docs_path(rel_path: str, base: Path | None = None) -> Path | None:
+    """Loest einen /docs/-Request auf eine Datei auf.
+
+    None wenn das Ziel ausserhalb von `base` liegt (Traversal, Symlink) oder
+    nicht existiert. Verzeichnisse werden auf index.html abgebildet.
+    """
+    base = base or docs_dir()
+    try:
+        base_res = base.resolve()
+    except OSError:
+        return None
+    if not base_res.is_dir():
+        return None
+
+    rel = unquote(rel_path).lstrip("/")
+    try:
+        target = (base_res / rel).resolve()
+    except OSError:
+        return None
+    if target != base_res and not target.is_relative_to(base_res):
+        return None
+    if target.is_dir():
+        target = target / "index.html"
+    if not target.is_file():
+        return None
+    return target
+
+
+# ---------------------------------------------------------------------------
 # HTTP Server
 # ---------------------------------------------------------------------------
 
@@ -596,12 +1029,19 @@ ROUTES: dict[str, callable] = {
     "/schedule": _page_schedule,
     "/precheck": _page_precheck,
     "/ep": _page_ep,
+    "/hase": _page_hase,
 }
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        path = urlparse(self.path).path.rstrip("/") or "/"
+        raw_path = urlparse(self.path).path
+
+        if raw_path == "/docs" or raw_path.startswith("/docs/"):
+            self._serve_docs(raw_path[len("/docs"):])
+            return
+
+        path = raw_path.rstrip("/") or "/"
         handler = ROUTES.get(path)
 
         if handler is None:
@@ -609,27 +1049,69 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            html = handler()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(html.encode("utf-8"))
+            self._send_html(handler())
         except Exception:
-            tb = traceback.format_exc()
-            log.error(f"Web handler error for {path}: {tb}")
-            self.send_response(500)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(_page("Fehler", _error_block(f"<pre>{tb}</pre>"), path).encode("utf-8"))
+            self._send_error_page(path)
+
+    def do_POST(self):
+        path = urlparse(self.path).path.rstrip("/") or "/"
+
+        if path != "/hase/action":
+            self.send_error(404)
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length).decode("utf-8") if length > 0 else ""
+            form = {k: v[0] for k, v in parse_qs(body).items()}
+            self._send_html(handle_hase_action(form))
+        except Exception:
+            self._send_error_page(path)
+
+    def _send_html(self, html: str, code: int = 200):
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(html.encode("utf-8"))
+
+    def _send_error_page(self, path: str):
+        tb = traceback.format_exc()
+        log.error(f"Web handler error for {path}: {tb}")
+        self._send_html(_page("Fehler", _error_block(f"<pre>{escape(tb)}</pre>"), path), 500)
+
+    def _serve_docs(self, rel_path: str):
+        """Statisches Fileserving der gebauten MkDocs-Site."""
+        base = docs_dir()
+        if not base.is_dir():
+            self.send_error(404, "Docs nicht verfuegbar",
+                            f"Verzeichnis {base} fehlt (EULE_DOCS_DIR).")
+            return
+
+        target = resolve_docs_path(rel_path, base)
+        if target is None:
+            self.send_error(404)
+            return
+
+        ctype, _ = mimetypes.guess_type(target.name)
+        ctype = ctype or "application/octet-stream"
+        if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
+            ctype += "; charset=utf-8"
+
+        data = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def log_message(self, format, *args):
         log.info(f"Web: {args[0]}")
 
 
-def serve(port: int = DEFAULT_PORT):
+def serve(port: int = DEFAULT_PORT, bind: str = DEFAULT_BIND):
     """Startet den Wachtel Web-Server."""
-    server = HTTPServer(("0.0.0.0", port), Handler)
-    log.info(f"Wachtel Web auf http://localhost:{port}")
+    server = HTTPServer((bind, port), Handler)
+    log.info(f"Wachtel Web auf http://{bind}:{port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
