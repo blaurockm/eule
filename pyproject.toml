@@ -23,6 +23,7 @@ dependencies = [
     "requests>=2.31",
     "matplotlib>=3.7",
     "tzdata>=2024.1",
+    "openpyxl (>=3.1.5,<4.0.0)",
 ]
 
 [project.scripts]
@@ -30,6 +31,14 @@ eule = "eule.cli:app"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0.0"
+
+# Optionale Gruppe: Doku-Build (baut u.a. die hase-Doku auf dem Server).
+# Installation: poetry install --with docs
+[tool.poetry.group.docs]
+optional = true
+
+[tool.poetry.group.docs.dependencies]
+mkdocs-material = ">=9.7,<10"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
