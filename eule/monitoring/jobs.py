@@ -141,7 +141,7 @@ def _save_daily_state(state: dict) -> None:
 
 def _expected_daily_envs(now: datetime) -> list[str]:
     """Envs, von denen heute ein EOD-JSON erwartet wird: monitoring-aktiv
-    und heutiger Wochentag in den Trading-Weekdays (aus der Fuchs-Config)."""
+    und heutiger Wochentag in den Trading-Weekdays (precheck.ENVIRONMENTS)."""
     from eule.monitoring import precheck as pc
 
     expected = []

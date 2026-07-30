@@ -28,35 +28,82 @@ BASELINES_DIR = Path(__file__).parent / "baselines"
 PRECHECK_STATE_FILE = Path.home() / ".eule" / ".precheck_last_anomalies"
 API_TIMEOUT = 5
 
+# Per-Env-Config: Port, Tier, Schwellen, Trading-Hours und Strategie-Liste.
+# Trading-Hours und strategy_files kamen bis 2026-07-30 aus den
+# fuchs-config.*.json der Hase-Alt-Checkouts; mit der Aufloesung des
+# Fuchs-Supervisors (Docker-Phase 6) sind sie hier die single source of truth.
+# trading_hours=None bedeutet 24/7.
 ENVIRONMENTS = {
     "staging-ibkr": {
         "port": 8776,
         "tier": "staging",
+        "trading_hours": {
+            "weekdays": [0, 1, 2, 3, 4],
+            "start": "09:00",
+            "end": "23:30",
+            "tz": "Europe/Berlin",
+        },
+        "strategy_files": [
+            "spx-0dte-always.json",
+            "ndx-0dte-always.json",
+            "iwm-0dte-fri-put.json",
+            "gld-1dte-tue-put.json",
+            "gld-1dte-thu-put.json",
+            "dax-mean-rev.json",
+            "mcl-rsi-opencompare.json",
+        ],
     },
     "staging-hl": {
         "port": 8777,
         "tier": "staging",
         "monitoring": False,  # Hyperliquid testnet — no actionable alerts
+        "trading_hours": {
+            "weekdays": [0, 1, 2, 3, 4, 5, 6],
+            "start": "00:00",
+            "end": "23:59",
+            "tz": "Europe/Berlin",
+        },
+        "strategy_files": [
+            "crypto-trendconv-v7d.json",
+            "crypto-bb-short-mr.json",
+        ],
     },
     "real-ibkr": {
         "port": 8767,
         "tier": "production",
         "unrealized_threshold": -5000,
+        "trading_hours": {
+            "weekdays": [0, 1, 2, 3, 4],
+            "start": "13:00",
+            "end": "22:00",
+            "tz": "Europe/Berlin",
+        },
+        "strategy_files": [
+            "spx-0dte-mon-put.json",
+            "spx-0dte-tue-put.json",
+            "ndx-0dte-mon-put.json",
+        ],
     },
     "real2-ibkr": {
         "port": 8768,
         "tier": "production",
         "unrealized_threshold": -1000,
+        "trading_hours": {
+            "weekdays": [0, 1, 2, 3, 4],
+            "start": "13:00",
+            "end": "22:00",
+            "tz": "Europe/Berlin",
+        },
+        "strategy_files": [
+            "spx-0dte-mon-put-small.json",
+            "spx-0dte-tue-put.json",
+        ],
     },
 }
 
-
-# Trading-Hours sind NICHT hier hartkodiert — single source of truth ist die
-# Fuchs-Config. Eule liest sie bei Bedarf aus den JSON-Files.
-_FUCHS_CONFIG_PATHS = {
-    "production": "fuchs-config.production.json",
-    "staging": "fuchs-config.staging.json",
-}
+# Hase-Strategy-JSONs: Shallow-Checkout des hase-Repos auf systematic
+# (taeglich 06:30 per Cron gepullt). Override via EULE_STRATEGIES_DIR.
+_DEFAULT_STRATEGIES_DIR = "/srv/hase/docs-src/strategies"
 
 # Container-Mounts der Runtimes (Containerisierung: staging 2026-07-08, prod/Phase 5
 # 2026-07-15): jeder Container bindet sein /app/werkstatt an den jeweiligen Host-Mount.
@@ -84,55 +131,24 @@ def all_werkstatt_logs_dirs() -> list[Path]:
     return sorted({werkstatt_logs_dir(env) for env in ENVIRONMENTS})
 
 
-def _fuchs_config_path(env_name: str) -> Path:
-    """Return path to the Fuchs config file responsible for env_name.
+def strategies_dir() -> Path:
+    """Verzeichnis der Hase-Strategy-JSONs (Shallow-Checkout auf systematic).
 
-    Override via EULE_HASE_DIR; sonst ~/staging fuer staging-* und ~/hase
-    fuer real-*.
+    Override via EULE_STRATEGIES_DIR (Tests/Entwicklung).
     """
-    override = os.environ.get("EULE_HASE_DIR")
-    if override:
-        base = Path(override)
-    elif env_name.startswith("staging"):
-        base = Path.home() / "staging"
-    else:
-        base = Path.home() / "hase"
-    filename = _FUCHS_CONFIG_PATHS["staging" if env_name.startswith("staging") else "production"]
-    return base / filename
+    return Path(os.environ.get("EULE_STRATEGIES_DIR", _DEFAULT_STRATEGIES_DIR))
 
 
 def load_trading_hours(env_name: str) -> dict | None:
-    """Lese trading_hours aus der Fuchs-Config fuer dieses Environment.
+    """Trading-Hours eines Environments — None bedeutet 24/7.
 
-    Reihenfolge: per-environment override (`environments[env].trading_hours`)
-    → Supervisor-Default (`supervisor.trading_hours`) → None (= 24/7).
-
-    Wird die Config nicht gefunden (z.B. auf dem Dev-Rechner), wird None
-    zurueckgegeben — dann pruefen wir 24/7. Auf systematic existieren die
-    Files immer.
+    Statisch in ENVIRONMENTS gepflegt (bis 2026-07-30 aus der Fuchs-Config
+    gelesen, die es seit Docker-Phase 6 nicht mehr gibt).
 
     Format passt zu is_trading_time / is_in_startup_or_shutdown_window:
     {"weekdays": [...], "start": "HH:MM", "end": "HH:MM", "tz": "..."}.
     """
-    import json
-
-    path = _fuchs_config_path(env_name)
-    try:
-        with open(path) as f:
-            cfg = json.load(f)
-    except FileNotFoundError:
-        return None
-
-    env_cfg = cfg.get("environments", {}).get(env_name, {})
-    th = env_cfg.get("trading_hours") or cfg.get("supervisor", {}).get("trading_hours")
-    if not th:
-        return None
-    return {
-        "weekdays": th.get("weekdays", [0, 1, 2, 3, 4]),
-        "start": th["start"],
-        "end": th["end"],
-        "tz": th.get("timezone", "Europe/Berlin"),
-    }
+    return ENVIRONMENTS.get(env_name, {}).get("trading_hours")
 
 # EOD-Deadline: Puffer nach Trading-Hours-Ende, bis zu dem Hase sein
 # EOD-JSON geschrieben haben muss (production: M2M ~30min nach Handelsschluss,
@@ -221,8 +237,8 @@ def is_in_startup_or_shutdown_window(
 ) -> bool:
     """True wenn wir innerhalb `grace_seconds` nach Start oder vor Ende liegen.
 
-    Waehrend dieses Fensters faehrt Fuchs den Hase-Prozess hoch bzw. Hase
-    macht Mark-to-Market und beendet sich — APIs sind nicht / nur teilweise
+    Waehrend dieses Fensters faehrt der Hase-Container hoch bzw. Hase macht
+    Mark-to-Market und beendet sich — APIs sind nicht / nur teilweise
     erreichbar. Precheck soll dort schweigen.
     """
     if schedule is None:
@@ -709,12 +725,12 @@ def eod_deadline(env_name: str) -> time:
     """EOD-Deadline (Berlin) fuer ein Env, abgeleitet aus den Trading-Hours.
 
     Trading-Ende + EOD_DEADLINE_BUFFER_MINUTES, gecappt auf EOD_DEADLINE_CAP.
-    Single source of truth ist die Fuchs-Config — frueher waren die Deadlines
-    hier hartkodiert und liefen bei Config-Aenderungen still auseinander
-    (22:59-vs-23:30-Falschalarm). Ohne auffindbare Trading-Hours gilt
-    EOD_DEADLINE_DEFAULT.
+    Abgeleitet aus ENVIRONMENTS[env].trading_hours, damit Deadline und
+    Trading-Hours nicht auseinanderlaufen koennen (frueher waren die
+    Deadlines separat hartkodiert -> 22:59-vs-23:30-Falschalarm). Ohne
+    Trading-Hours (24/7) gilt EOD_DEADLINE_DEFAULT.
 
-    Annahme: Trading-Hours-TZ ist Europe/Berlin (wie in beiden Fuchs-Configs).
+    Annahme: Trading-Hours-TZ ist Europe/Berlin.
     """
     schedule = load_trading_hours(env_name)
     if schedule is None:
@@ -736,7 +752,7 @@ def _eod_json_overdue(env_name: str, env_config: dict, now: datetime) -> bool:
     of the file was treated as "not written yet".
 
     Gated to the env's trading weekdays. Die Overdue-Deadline kommt aus
-    eod_deadline() (Trading-Ende + Puffer aus der Fuchs-Config). Market
+    eod_deadline() (Trading-Ende + Puffer, siehe ENVIRONMENTS). Market
     holidays sind nicht modelliert (gleiche Grenze wie die uebrige
     Trading-Hours-Gating-Logik).
     """
@@ -798,15 +814,14 @@ def check_action_times(env_name: str, env_config: dict) -> list[tuple[str, str]]
     """Statischer Config-Sanity-Check: action_time darf nicht NACH dem Trading-
     Hours-Ende des Environments liegen — sonst feuert die Action nie.
 
-    Portiert aus Fuchs ``supervisor._check_action_times_vs_trading_hours``
-    (verschwindet mit Fuchs in Phase 6). Liest die Strategy-JSONs aus dem
-    ``strategies/``-Verzeichnis neben der zustaendigen Fuchs-Config und
-    vergleicht ``action_time`` (in die TH-Zeitzone konvertiert) gegen das
-    Tagesende der effektiven Trading-Hours.
+    Portiert aus Fuchs ``supervisor._check_action_times_vs_trading_hours``.
+    Liest die Strategy-JSONs aus strategies_dir() (Hase-Checkout auf
+    systematic) und vergleicht ``action_time`` (in die TH-Zeitzone
+    konvertiert) gegen das Tagesende der Trading-Hours des Environments.
 
     Unabhaengig von den Trading-Hours (statischer Config-Fehler, jederzeit
-    relevant) — die Dedup in run_precheck verhindert Alarm-Spam. Fehlt die
-    Config (Dev-Rechner), gibt es nichts zu pruefen -> [].
+    relevant) — die Dedup in run_precheck verhindert Alarm-Spam. Fehlt das
+    Strategie-Verzeichnis (Dev-Rechner), gibt es nichts zu pruefen -> [].
     """
     import json
 
@@ -818,24 +833,17 @@ def check_action_times(env_name: str, env_config: dict) -> list[tuple[str, str]]
     if schedule is None:
         return []
 
-    config_path = _fuchs_config_path(env_name)
-    try:
-        cfg = json.loads(config_path.read_text())
-    except (FileNotFoundError, ValueError):
+    strat_dir = strategies_dir()
+    if not strat_dir.is_dir():
         return []
 
-    env_cfg = cfg.get("environments", {}).get(env_name, {})
-    if not env_cfg.get("enabled", True):
-        return []
-
-    strat_dir = config_path.parent / "strategies"
     th_tz = ZoneInfo(schedule["tz"])
     th_end = time.fromisoformat(schedule["end"])
     th_end_min = th_end.hour * 60 + th_end.minute
     severity = "CRITICAL" if env_config["tier"] == "production" else "WARNING"
 
     anomalies = []
-    for strat_file in env_cfg.get("strategy_files", []):
+    for strat_file in env_config.get("strategy_files", []):
         strat_path = strat_dir / strat_file
         if not strat_path.exists():
             continue
@@ -873,8 +881,7 @@ def check_action_times(env_name: str, env_config: dict) -> list[tuple[str, str]]
 def check_host_disk() -> list[tuple[str, str]]:
     """Env-agnostischer Host-Disk-Watchdog (WARN 85 % / CRIT 95 % belegt).
 
-    Portiert aus Fuchs ``supervisor._check_disk_space`` (verschwindet mit Fuchs
-    in Phase 6). Laeuft auf dem Host und feuert daher AUCH wenn kein Runtime
+    Portiert aus Fuchs ``supervisor._check_disk_space``. Laeuft auf dem Host und feuert daher AUCH wenn kein Runtime
     laeuft — genau das 11.-19.06.-Szenario: ein voller Datentraeger loeschte das
     staging-venv, und der Runtime startete nie wieder. Der Runtime-eigene Check
     (`/status` runtime_health, `<1GB`) greift nur solange er laeuft.
@@ -926,7 +933,7 @@ def env_status_header() -> str:
     """Build header lines describing current time and per-env trading-hours status.
 
     Schmales Layout (zwei Zeilen pro Env), damit der Output in Telegram auf
-    dem Handy nicht umbricht. Quelle der Trading-Hours: Fuchs-Configs
+    dem Handy nicht umbricht. Quelle der Trading-Hours: ENVIRONMENTS
     (siehe load_trading_hours).
     """
     tz = ZoneInfo("Europe/Berlin")

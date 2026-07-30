@@ -11,18 +11,14 @@ Daemon process that:
 
 import glob as glob_mod
 import html as html_mod
-import json
 import logging
 import os
 import queue
 import re
-import smtplib
 import subprocess
 import threading
 import time as time_module
 from datetime import datetime, timedelta
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -44,20 +40,6 @@ HEALTHCHECK_URL = os.environ.get("HEALTHCHECK_URL", "")
 MONITORING_DIR = Path(__file__).parent
 PRECHECK_SCRIPT = MONITORING_DIR / "precheck.py"
 EULE_ROOT = MONITORING_DIR.parent.parent  # eule project root
-
-
-def _hase_root(env: str | None = None) -> Path:
-    """Hase-Installation fuer ein Environment.
-
-    Production (real-*) liegt unter ~/hase/, Staging unter ~/staging/.
-    Auf dem Entwicklungsrechner kann EULE_HASE_DIR alles ueberschreiben.
-    """
-    override = os.environ.get("EULE_HASE_DIR")
-    if override:
-        return Path(override)
-    if env and env.startswith("staging"):
-        return Path.home() / "staging"
-    return Path.home() / "hase"
 
 TELEGRAM_POLL_TIMEOUT = 30
 MAX_MESSAGE_LENGTH = 4096
@@ -194,43 +176,18 @@ def split_message(text: str) -> list[str]:
     return chunks
 
 
-# --- Email via Fuchs SMTP Config ---
-
-_email_config: dict | None = None
-
-
-def _load_email_config() -> dict | None:
-    """Load SMTP config from fuchs-config (production or staging).
-
-    Uses the SMTP credentials regardless of the 'enabled' flag —
-    that flag controls Fuchs alerting, not Wachtel email sending.
-    """
-    global _email_config
-    if _email_config is not None:
-        return _email_config
-
-    config_path = _hase_root("real-ibkr") / "fuchs-config.production.json"
-    if not config_path.exists():
-        config_path = _hase_root("staging-ibkr") / "fuchs-config.staging.json"
-    if not config_path.exists():
-        log.warning("No fuchs-config found for email")
-        return None
-
-    try:
-        data = json.loads(config_path.read_text())
-        email = data.get("alerting", {}).get("email", {})
-        if not email.get("smtp_host"):
-            log.warning("No smtp_host in fuchs-config email section")
-            return None
-        _email_config = email
-        return _email_config
-    except Exception as e:
-        log.error(f"Failed to load email config: {e}")
-        return None
+# --- Email via SMTP-Env-Vars (.env) ---
 
 
 def send_email(subject: str, body: str, html: bool = False) -> bool:
-    """Send an email using SMTP credentials from fuchs-config.
+    """Send an email using the SMTP credentials from the environment.
+
+    Delegiert an eule.pipeline.email.send_email — Credentials kommen aus
+    SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS/EMAIL_FROM/EMAIL_TO (.env).
+    EMAIL_TO darf mehrere, kommaseparierte Adressen enthalten (frueher die
+    to_addresses-Liste der Fuchs-Config).
+
+    Wirft NIE — die Scheduler-Jobs werten nur den bool aus.
 
     Args:
         subject: Email subject
@@ -238,33 +195,22 @@ def send_email(subject: str, body: str, html: bool = False) -> bool:
         html: If True, send as HTML email
 
     Returns:
-        True on success, False on failure
+        True on success, False if not configured or on failure
     """
-    cfg = _load_email_config()
-    if not cfg:
-        log.warning("Email not configured — skipping")
+    from eule.pipeline.email import send_email as _send
+
+    if not (os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASS")
+            and os.environ.get("EMAIL_TO")):
+        log.warning("Email not configured (SMTP_USER/SMTP_PASS/EMAIL_TO) — skipping")
         return False
 
-    msg = MIMEMultipart("alternative")
-    msg["From"] = cfg.get("from_address", cfg["smtp_user"])
-    msg["To"] = ", ".join(cfg["to_addresses"])
-    msg["Subject"] = subject
-
-    if html:
-        msg.attach(MIMEText(body, "html"))
-    else:
-        msg.attach(MIMEText(body, "plain"))
-
     try:
-        with smtplib.SMTP(cfg["smtp_host"], cfg.get("smtp_port", 587)) as server:
-            server.starttls()
-            server.login(cfg["smtp_user"], cfg["smtp_password"])
-            server.send_message(msg)
-        log.info(f"Email sent: {subject}")
-        return True
+        _send(subject, body, html=html)
     except Exception as e:
         log.error(f"Failed to send email: {e}")
         return False
+    log.info(f"Email sent: {subject}")
+    return True
 
 
 def _report_to_html(report_text: str, title: str = "Wachtel Weekly Performance Report") -> str:
