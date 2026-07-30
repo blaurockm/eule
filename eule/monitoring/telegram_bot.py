@@ -62,29 +62,6 @@ def _hase_root(env: str | None = None) -> Path:
 TELEGRAM_POLL_TIMEOUT = 30
 MAX_MESSAGE_LENGTH = 4096
 
-# --- Fuchs Process Control ---
-
-_FUCHS_SERVICES = {
-    "staging-ibkr": "fuchs-staging.service",
-    "staging-hl": "fuchs-staging.service",
-    "real-ibkr": "fuchs-supervisor.service",
-    "real2-ibkr": "fuchs-supervisor.service",
-}
-
-# Reverse: which envs share a service?
-_SERVICE_ENVS: dict[str, list[str]] = {}
-for _env, _svc in _FUCHS_SERVICES.items():
-    _SERVICE_ENVS.setdefault(_svc, []).append(_env)
-
-_FUCHS_CONFIGS = {
-    "staging-ibkr": "fuchs-config.staging.json",
-    "staging-hl": "fuchs-config.staging.json",
-    "real-ibkr": "fuchs-config.production.json",
-    "real2-ibkr": "fuchs-config.production.json",
-}
-
-# Alert dedup: only re-alert when the anomaly set changes (not on every precheck cycle)
-
 # --- Telegram API ---
 
 
@@ -165,45 +142,21 @@ def send_photo(photo_path: str, caption: str = ""):
         log.error(f"sendPhoto failed: {e}")
 
 
-def send_message(text: str, parse_mode: str | None = None, reply_markup: dict | None = None):
+def send_message(text: str, parse_mode: str | None = None):
     """Send a message to the configured chat. Splits long messages."""
     if not BOT_TOKEN:
         log.warning("No TELEGRAM_BOT_TOKEN set, skipping message")
         return
 
     chunks = split_message(text)
-    for i, chunk in enumerate(chunks):
+    for chunk in chunks:
         kwargs: dict = {"chat_id": CHAT_ID, "text": chunk}
         if parse_mode:
             kwargs["parse_mode"] = parse_mode
-        # Only attach buttons to the last chunk
-        if reply_markup and i == len(chunks) - 1:
-            kwargs["reply_markup"] = reply_markup
         result = tg_request("sendMessage", **kwargs)
         if result is None and parse_mode:
             # Retry without parse_mode (formatting might be broken)
-            kwargs2: dict = {"chat_id": CHAT_ID, "text": chunk}
-            if reply_markup and i == len(chunks) - 1:
-                kwargs2["reply_markup"] = reply_markup
-            tg_request("sendMessage", **kwargs2)
-
-
-def answer_callback_query(callback_query_id: str, text: str = ""):
-    """Acknowledge a callback query (dismiss the 'loading' indicator on the button)."""
-    tg_request("answerCallbackQuery", callback_query_id=callback_query_id, text=text)
-
-
-def edit_message(message_id: int, text: str, parse_mode: str | None = None):
-    """Edit an existing message (used to update confirmation messages after button press)."""
-    kwargs: dict = {"chat_id": CHAT_ID, "message_id": message_id, "text": text}
-    if parse_mode:
-        kwargs["parse_mode"] = parse_mode
-    tg_request("editMessageText", **kwargs)
-
-
-def _inline_keyboard(buttons: list[tuple[str, str]]) -> dict:
-    """Build an InlineKeyboardMarkup from a list of (label, callback_data) tuples."""
-    return {"inline_keyboard": [[{"text": label, "callback_data": data} for label, data in buttons]]}
+            tg_request("sendMessage", chat_id=CHAT_ID, text=chunk)
 
 
 def _register_bot_commands():
@@ -211,11 +164,6 @@ def _register_bot_commands():
     commands = [
         {"command": "status", "description": "Precheck ausfuehren"},
         {"command": "summary", "description": "Tages-Summary (deterministisch)"},
-        {"command": "fstatus", "description": "Fuchs Service Status"},
-        {"command": "fstart", "description": "Fuchs Service starten"},
-        {"command": "fstop", "description": "Fuchs Service stoppen"},
-        {"command": "frestart", "description": "Fuchs Service neustarten"},
-        {"command": "emergency", "description": "Emergency Stop setzen"},
         {"command": "flogs", "description": "Runtime-Log anzeigen"},
         {"command": "report", "description": "Performance Report"},
         {"command": "equity", "description": "Equity-Kurve als Chart"},
@@ -730,8 +678,7 @@ def handle_help() -> str:
     """Deterministische Befehlsuebersicht (ersetzt die fruehere Freitext-KI)."""
     return (
         "Wachtel ist ein deterministischer Monitor (kein LLM).\n\n"
-        "<b>Monitoring:</b> /status, /summary, /report, /equity, /baseline\n"
-        "<b>Fuchs:</b> /fstatus, /fstart, /fstop, /frestart, /emergency, /flogs\n"
+        "<b>Monitoring:</b> /status, /summary, /report, /equity, /baseline, /flogs\n"
         "<b>Sonstiges:</b> /mute, /unmute"
     )
 
@@ -763,114 +710,16 @@ def clear_mute():
         _mute_until = None
 
 
-# --- Fuchs Process Control Handlers ---
-
-
-def _run_systemctl(action: str, service: str) -> tuple[int, str]:
-    """Run systemctl --user <action> <service> and return (exit_code, output)."""
-    try:
-        result = subprocess.run(
-            ["systemctl", "--user", action, service],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        output = result.stdout.strip() or result.stderr.strip()
-        return result.returncode, output
-    except subprocess.TimeoutExpired:
-        return 1, "Timeout nach 30s"
-    except Exception as e:
-        return 1, str(e)
+# --- Runtime Log Peek ---
 
 
 def _validate_env(env: str) -> str | None:
-    """Validate env argument. Returns error message or None if valid."""
-    if not env or env not in _FUCHS_SERVICES:
-        return f"Unbekanntes Environment. Verfuegbar: {', '.join(_FUCHS_SERVICES.keys())}"
+    """Validate env argument against the monitored environments. Returns error message or None."""
+    from eule.monitoring.precheck import ENVIRONMENTS
+
+    if not env or env not in ENVIRONMENTS:
+        return f"Unbekanntes Environment. Verfuegbar: {', '.join(ENVIRONMENTS.keys())}"
     return None
-
-
-def _sibling_warning(env: str) -> str:
-    """Warn about sibling environments affected by service restart/stop."""
-    service = _FUCHS_SERVICES.get(env, "")
-    siblings = _SERVICE_ENVS.get(service, [])
-    if len(siblings) > 1:
-        return f"\nBetrifft ALLE Envs in {service}: {', '.join(siblings)}."
-    return ""
-
-
-def _confirm_buttons(action: str, env: str) -> dict:
-    """Build inline keyboard with Ja/Abbrechen buttons."""
-    return _inline_keyboard(
-        [
-            ("\u2705 Ja", f"{action}:{env}:yes"),
-            ("\u274c Abbrechen", f"{action}:{env}:no"),
-        ]
-    )
-
-
-def handle_fstatus() -> str:
-    """Show systemctl status of all Fuchs services."""
-    seen = set()
-    lines = ["<b>Fuchs Service Status</b>\n"]
-    for env, service in _FUCHS_SERVICES.items():
-        if service in seen:
-            continue
-        seen.add(service)
-        code, output = _run_systemctl("is-active", service)
-        state = output.strip()
-        emoji = "\U0001f7e2" if state == "active" else "\U0001f534"
-        envs = ", ".join(_SERVICE_ENVS.get(service, []))
-        lines.append(f"{emoji} <b>{service}</b> ({envs}): {state}")
-    return "\n".join(lines)
-
-
-def handle_fstart(env: str) -> str:
-    """Start a Fuchs service."""
-    err = _validate_env(env)
-    if err:
-        return err
-    service = _FUCHS_SERVICES[env]
-    code, output = _run_systemctl("start", service)
-    if code == 0:
-        return f"\U0001f7e2 {service} gestartet."
-    return f"\U0001f534 Fehler beim Start von {service}: {output}"
-
-
-def handle_fstop(env: str) -> tuple[str, dict]:
-    """Return confirmation prompt with inline buttons for stopping."""
-    err = _validate_env(env)
-    if err:
-        return err, {}
-    service = _FUCHS_SERVICES[env]
-    text = f"\u26a0\ufe0f <b>ACHTUNG:</b> Stoppt <b>{service}</b>.{_sibling_warning(env)}"
-    return text, _confirm_buttons("fstop", env)
-
-
-def handle_frestart(env: str) -> tuple[str, dict]:
-    """Return confirmation prompt with inline buttons for restarting."""
-    err = _validate_env(env)
-    if err:
-        return err, {}
-    service = _FUCHS_SERVICES[env]
-    text = f"\u26a0\ufe0f <b>ACHTUNG:</b> Startet <b>{service}</b> neu.{_sibling_warning(env)}"
-    return text, _confirm_buttons("frestart", env)
-
-
-def handle_emergency(env: str) -> tuple[str, dict]:
-    """Return confirmation prompt with inline buttons for emergency stop."""
-    err = _validate_env(env)
-    if err:
-        return err, {}
-    service = _FUCHS_SERVICES[env]
-    config_file = _FUCHS_CONFIGS[env]
-    text = (
-        f"\U0001f6a8 <b>EMERGENCY STOP</b>\n"
-        f"Setzt emergency_stop=true in {config_file} und startet {service} neu.\n"
-        f"{env} wird NICHT mehr automatisch gestartet."
-        f"{_sibling_warning(env)}"
-    )
-    return text, _confirm_buttons("emergency", env)
 
 
 def handle_flogs(env: str) -> str:
@@ -895,84 +744,6 @@ def handle_flogs(env: str) -> str:
         return f"<b>Letzte 20 Zeilen</b> ({Path(latest).name}):\n<pre>{escaped}</pre>"
     except Exception as e:
         return f"Fehler beim Lesen: {e}"
-
-
-def handle_callback(callback_query: dict) -> None:
-    """Handle inline keyboard button presses for confirmations."""
-    cb_id = callback_query.get("id", "")
-    data = callback_query.get("data", "")
-    message = callback_query.get("message", {})
-    message_id = message.get("message_id", 0)
-
-    # Authorize
-    chat_id = str(message.get("chat", {}).get("id", ""))
-    if chat_id != CHAT_ID:
-        answer_callback_query(cb_id, "Nicht autorisiert.")
-        return
-
-    parts = data.split(":")
-    if len(parts) != 3:
-        answer_callback_query(cb_id, "Ungueltige Aktion.")
-        return
-
-    action, env, choice = parts
-
-    if choice == "no":
-        answer_callback_query(cb_id, "Abgebrochen.")
-        edit_message(message_id, "\u274c Abgebrochen.", parse_mode="HTML")
-        return
-
-    if choice != "yes":
-        answer_callback_query(cb_id, "Ungueltige Antwort.")
-        return
-
-    # Execute the confirmed action
-    service = _FUCHS_SERVICES.get(env, "")
-    if not service:
-        answer_callback_query(cb_id, "Unbekanntes Environment.")
-        return
-
-    answer_callback_query(cb_id, "Wird ausgefuehrt...")
-
-    if action == "fstop":
-        code, output = _run_systemctl("stop", service)
-        if code == 0:
-            result_text = f"\U0001f534 {service} gestoppt."
-        else:
-            result_text = f"Fehler beim Stoppen: {output}"
-
-    elif action == "frestart":
-        code, output = _run_systemctl("restart", service)
-        if code == 0:
-            result_text = f"\U0001f7e2 {service} neugestartet."
-        else:
-            result_text = f"Fehler beim Restart: {output}"
-
-    elif action == "emergency":
-        config_path = _hase_root(env) / _FUCHS_CONFIGS[env]
-        try:
-            with open(config_path) as f:
-                config = json.load(f)
-            config["environments"][env]["emergency_stop"] = True
-            with open(config_path, "w") as f:
-                json.dump(config, f, indent=2)
-                f.write("\n")
-            log.warning(f"emergency_stop set for {env} in {config_path} (server-side edit, sync to repo!)")
-        except Exception as e:
-            edit_message(message_id, f"Fehler beim Setzen von emergency_stop: {e}", parse_mode="HTML")
-            return
-        code, output = _run_systemctl("restart", service)
-        if code == 0:
-            result_text = (
-                f"\U0001f6a8 emergency_stop fuer {env} gesetzt. {service} neugestartet.\n"
-                f"<i>Config auf Server geaendert — bei Gelegenheit ins Repo uebernehmen.</i>"
-            )
-        else:
-            result_text = f"emergency_stop gesetzt, aber Restart fehlgeschlagen: {output}"
-    else:
-        result_text = "Unbekannte Aktion."
-
-    edit_message(message_id, result_text, parse_mode="HTML")
 
 
 # --- Alert Deduplication ---
@@ -1045,12 +816,11 @@ def clear_anomaly_state():
 
 
 class TelegramPoller(threading.Thread):
-    """Long-polling thread for Telegram updates (messages + callback queries)."""
+    """Long-polling thread for Telegram message updates."""
 
-    def __init__(self, message_queue: queue.Queue, callback_queue: queue.Queue):
+    def __init__(self, message_queue: queue.Queue):
         super().__init__(daemon=True, name="telegram-poller")
         self.message_queue = message_queue
-        self.callback_queue = callback_queue
         self.offset = 0
         self.running = True
 
@@ -1062,7 +832,7 @@ class TelegramPoller(threading.Thread):
                     "getUpdates",
                     offset=self.offset,
                     timeout=TELEGRAM_POLL_TIMEOUT,
-                    allowed_updates=["message", "callback_query"],
+                    allowed_updates=["message"],
                 )
                 if updates:
                     for update in updates:
@@ -1070,9 +840,6 @@ class TelegramPoller(threading.Thread):
                         msg = update.get("message")
                         if msg:
                             self.message_queue.put(msg)
-                        cb = update.get("callback_query")
-                        if cb:
-                            self.callback_queue.put(cb)
             except Exception as e:
                 log.error(f"Poller error: {e}")
                 time_module.sleep(10)
@@ -1094,10 +861,9 @@ def main():
     _register_bot_commands()
 
     msg_queue: queue.Queue = queue.Queue()
-    cb_queue: queue.Queue = queue.Queue()
 
     # Start poller
-    poller = TelegramPoller(msg_queue, cb_queue)
+    poller = TelegramPoller(msg_queue)
     poller.start()
 
     # Start scheduler (config-getrieben aus schedule.yaml)
@@ -1125,17 +891,6 @@ def main():
 
     try:
         while True:
-            # Process callback queries (button presses) first — non-blocking
-            while not cb_queue.empty():
-                try:
-                    cb = cb_queue.get_nowait()
-                    log.info(f"Callback: {cb.get('data', '?')}")
-                    handle_callback(cb)
-                except queue.Empty:
-                    break
-                except Exception as e:
-                    log.error(f"Callback handling error: {e}")
-
             try:
                 msg = msg_queue.get(timeout=2)
             except queue.Empty:
@@ -1179,29 +934,6 @@ def main():
             elif text.startswith("/baseline"):
                 args = text.replace("/baseline", "", 1).strip()
                 response = handle_baseline(args)
-            # --- Fuchs Process Control ---
-            elif text.startswith("/fstatus"):
-                response = handle_fstatus()
-            elif text.startswith("/fstart"):
-                response = handle_fstart(text.replace("/fstart", "", 1).strip())
-            elif text.startswith("/fstop"):
-                result = handle_fstop(text.replace("/fstop", "", 1).strip())
-                if isinstance(result, tuple):
-                    send_message(result[0], parse_mode="HTML", reply_markup=result[1])
-                    continue
-                response = result
-            elif text.startswith("/frestart"):
-                result = handle_frestart(text.replace("/frestart", "", 1).strip())
-                if isinstance(result, tuple):
-                    send_message(result[0], parse_mode="HTML", reply_markup=result[1])
-                    continue
-                response = result
-            elif text.startswith("/emergency"):
-                result = handle_emergency(text.replace("/emergency", "", 1).strip())
-                if isinstance(result, tuple):
-                    send_message(result[0], parse_mode="HTML", reply_markup=result[1])
-                    continue
-                response = result
             elif text.startswith("/flogs"):
                 response = handle_flogs(text.replace("/flogs", "", 1).strip())
             else:
