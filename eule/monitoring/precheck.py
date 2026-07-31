@@ -26,7 +26,15 @@ import yaml
 
 BASELINES_DIR = Path(__file__).parent / "baselines"
 PRECHECK_STATE_FILE = Path.home() / ".eule" / ".precheck_last_anomalies"
-API_TIMEOUT = 5
+
+# Connect und Read getrennt, weil sie zwei verschiedene Dinge bedeuten:
+# ein toter Prozess lehnt den TCP-Handshake sofort ab (~1ms), eine lebende
+# aber ausgelastete Runtime nimmt die Verbindung an und antwortet spaet.
+# Read grosszuegig, damit der 0DTE-Entry um 11:00 ET (Runtime haengt dann in
+# wait_for_order_execution) keinen Fehlalarm ausloest.
+API_CONNECT_TIMEOUT = 2
+API_READ_TIMEOUT = 20
+API_TIMEOUT = (API_CONNECT_TIMEOUT, API_READ_TIMEOUT)
 
 # Per-Env-Config: Port, Tier, Schwellen, Trading-Hours und Strategie-Liste.
 # Trading-Hours und strategy_files kamen bis 2026-07-30 aus den
@@ -284,6 +292,56 @@ def api_post(port: int, endpoint: str) -> dict | None:
         return None
 
 
+def probe_health(port: int) -> tuple[str, dict | None]:
+    """Erreichbarkeits-Probe auf /health. Gibt (state, payload) zurueck.
+
+    api_get() bildet jeden Fehler auf ``None`` ab und macht damit vier
+    grundverschiedene Lagen ununterscheidbar. Hier werden sie getrennt:
+
+    ``dead``      Kein Listener — TCP wird abgelehnt (Container/Prozess weg).
+                  Steht in ~1ms fest, also schneller als der alte 5s-Timeout.
+    ``hanging``   Verbindung steht, aber zweimal keine Antwort innerhalb
+                  API_READ_TIMEOUT. Prozess lebt, kommt aber nicht mehr zum
+                  Antworten — auch das ist ein Alarm, im selben Lauf.
+    ``unhealthy`` HTTP 503: Runtime laeuft und meldet selbst ERROR (z.B.
+                  Broker-Disconnect ueber die Grace-Zeit hinaus). Das ist
+                  KEIN Erreichbarkeitsproblem und darf nicht so heissen.
+    ``error``     Anderer HTTP-Fehler oder unlesbarer Body.
+    ``ok``        Antwort da. Bewusst auch dann, wenn sie lange gedauert hat.
+
+    Ein einzelner ReadTimeout ist absichtlich kein Alarm: waehrend des
+    0DTE-Entries um 11:00 ET haengt die Runtime in wait_for_order_execution
+    und antwortet verzoegert. Zaeh ist kein Ausfall.
+    """
+    url = f"http://localhost:{port}/health"
+
+    for _ in range(2):
+        try:
+            resp = requests.get(url, timeout=API_TIMEOUT)
+        except requests.exceptions.ReadTimeout:
+            continue  # lebt, nur langsam — zweiter Versuch
+        except requests.exceptions.ConnectionError:
+            # Umfasst auch ConnectTimeout (Subklasse): niemand nimmt ab.
+            return "dead", None
+        except Exception:
+            return "error", None
+
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = None
+
+        if resp.status_code == 503:
+            return "unhealthy", payload
+        if resp.status_code >= 400:
+            return "error", {"status_code": resp.status_code}
+        if payload is None:
+            return "error", None
+        return "ok", payload
+
+    return "hanging", None
+
+
 _DAY_MAP = {
     "monday": 0,
     "tuesday": 1,
@@ -436,11 +494,26 @@ def check_environment(env_name: str, env_config: dict, baselines: dict) -> list[
     if is_in_startup_or_shutdown_window(schedule):
         return []
 
-    # 1. Health check
-    health = api_get(port, "/health")
-    if health is None:
+    # 1. Health check. "Nicht erreichbar" und "antwortet langsam" sind zwei
+    # verschiedene Dinge — nur das erste ist ein Alarm, s. probe_health().
+    health_state, health_payload = probe_health(port)
+    if health_state == "dead":
         anomalies.append((severity, f"[{env_name}] API unreachable"))
         return anomalies
+    if health_state == "hanging":
+        anomalies.append((
+            severity,
+            f"[{env_name}] API haengt (2x keine Antwort in {API_READ_TIMEOUT}s)",
+        ))
+        return anomalies
+    if health_state == "error":
+        code = (health_payload or {}).get("status_code", "?")
+        anomalies.append((severity, f"[{env_name}] /health HTTP {code}"))
+        return anomalies
+    if health_state == "unhealthy":
+        # Runtime laeuft und meldet sich selbst als ERROR. Bewusst kein
+        # return: die Detail-Checks unten sagen, WAS kaputt ist.
+        anomalies.append((severity, f"[{env_name}] Runtime meldet ERROR (HTTP 503)"))
 
     # 1b. Runtime-level health check (consumer thread, DB buffer, disk)
     status = api_get(port, "/status")
