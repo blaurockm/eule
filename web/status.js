@@ -68,6 +68,17 @@ const fmtAge = (ms) => {
 const fmtClock = (date) =>
   date.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
+/** next_action_time (ISO mit Offset) -> Lokalzeit, mit Datum falls nicht heute. */
+const fmtActionTime = (raw) => {
+  const t = Date.parse(raw);
+  if (isNaN(t)) return raw;
+  const d = new Date(t);
+  const time = d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === new Date().toDateString()) return `${time} Uhr`;
+  const day = d.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit" });
+  return `${day} ${time} Uhr`;
+};
+
 /** Timestamp des Heartbeats (UTC, vom Runtime selbst) — DB-updated_at nur als Fallback. */
 const heartbeatTime = (row) => {
   const raw = row?.heartbeat?.timestamp || row?.updated_at;
@@ -112,7 +123,15 @@ function renderStrategy(strat) {
   li.appendChild(top);
 
   const msg = display.status_message;
-  li.appendChild(el("p", "strat-msg", msg ? msg : "keine Statusmeldung"));
+  if (msg) {
+    li.appendChild(el("p", "strat-msg", msg));
+  } else if (display.next_action_time) {
+    li.appendChild(
+      el("p", "strat-msg", `Wartet auf nächste Action um ${fmtActionTime(display.next_action_time)}`)
+    );
+  } else {
+    li.appendChild(el("p", "strat-msg", "keine Statusmeldung"));
+  }
 
   const problems = (strat.health && strat.health.problems) || [];
   if (problems.length) {
