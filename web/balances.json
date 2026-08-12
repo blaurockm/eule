@@ -1,42 +1,42 @@
 {
-  "generated_at": "2026-07-30T06:17:42",
+  "generated_at": "2026-08-12T07:45:11",
   "global": {
-    "broker_total": 15739.24,
+    "broker_total": 14528.49,
     "giro_total": 122.49,
-    "total_pnl": -227.87,
-    "total_expenses": 3960.4,
+    "total_pnl": -1430.21,
+    "total_expenses": 3968.81,
     "total_deposits": 20050.0,
-    "cagr": -0.1057,
+    "cagr": -0.1368,
     "currency": "EUR",
     "holder_balances": {
       "A": {
         "name": "Markus Blaurock",
-        "balance": 2933.08,
-        "balance_broker": 2910.43,
-        "balance_giro": 22.65
+        "balance": 2207.47,
+        "balance_broker": 2189.01,
+        "balance_giro": 18.46
       },
       "B": {
         "name": "CaH",
-        "balance": 12928.65,
-        "balance_broker": 12828.81,
-        "balance_giro": 99.84
+        "balance": 12443.51,
+        "balance_broker": 12339.48,
+        "balance_giro": 104.03
       }
     },
     "recent_trades": [
       {
-        "date": "2026-07-28",
+        "date": "2026-08-11",
         "count": 2,
-        "pnl_eur": 271.38
+        "pnl_eur": -2149.44
       },
       {
-        "date": "2026-07-27",
+        "date": "2026-08-10",
         "count": 2,
-        "pnl_eur": 298.22
+        "pnl_eur": 371.66
       },
       {
-        "date": "2026-07-21",
+        "date": "2026-08-04",
         "count": 2,
-        "pnl_eur": 350.05
+        "pnl_eur": 319.98
       }
     ]
   },
@@ -44,19 +44,19 @@
     "dmhwYYmsI84GmTrGysK-nJuPtOlGCPmUQX9Yi5h4Zmo": {
       "holder_id": "A",
       "name": "Markus Blaurock",
-      "as_of": "2026-07-30",
-      "pnl_share": -136.72,
+      "as_of": "2026-08-12",
+      "pnl_share": -858.13,
       "pnl_share_pct": 0.6,
-      "expenses_share": 1980.2,
+      "expenses_share": 1984.41,
       "expenses_share_pct": 0.5
     },
     "Q-mrNa3YMHRJh1PrYQt-bPAJHcATYupYEchWp6qG3fc": {
       "holder_id": "B",
       "name": "CaH",
-      "as_of": "2026-07-30",
-      "pnl_share": -91.15,
+      "as_of": "2026-08-12",
+      "pnl_share": -572.08,
       "pnl_share_pct": 0.4,
-      "expenses_share": 1980.2,
+      "expenses_share": 1984.41,
       "expenses_share_pct": 0.5
     }
   }
