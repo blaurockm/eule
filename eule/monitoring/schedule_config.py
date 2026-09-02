@@ -158,6 +158,7 @@ jobs:
     cron: "0 14 * * 0-4"          # Mo-Fr 14:00
     notify: [email]
     on_error: [telegram]
+    enabled: false
 
   hamster_ibkr:
     action: systemd
