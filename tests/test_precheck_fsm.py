@@ -3,7 +3,11 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from eule.monitoring.precheck import _condition_active, evaluate_fsm_expectations
+from eule.monitoring.precheck import (
+    _condition_active,
+    evaluate_fsm_expectations,
+    is_no_trading_day_flat,
+)
 
 
 def _eval_one(condition, expected, current_state, now):
@@ -238,3 +242,41 @@ class TestOverlappingConditions:
     def test_empty_expectations_returns_none(self):
         msg = evaluate_fsm_expectations([], "ANYTHING", self._berlin(9, 17))
         assert msg is None
+
+
+# ---------------------------------------------------------------------------
+# is_no_trading_day_flat — Boersenfeiertag laut hase-API (Vorfall 2026-09-07)
+# ---------------------------------------------------------------------------
+
+
+class TestNoTradingDayFlat:
+    def _strat(self, fsm, status_message=None, is_active_today=None):
+        d = {"display": {"fsm_state": fsm, "status_message": status_message}}
+        if is_active_today is not None:
+            d["is_active_today"] = is_active_today
+        return d
+
+    def test_api_flag_false_and_flat_is_skipped(self):
+        assert is_no_trading_day_flat(self._strat("FLAT", is_active_today=False)) is True
+
+    def test_api_flag_true_and_flat_is_checked(self):
+        assert is_no_trading_day_flat(self._strat("FLAT", is_active_today=True)) is False
+
+    def test_transition_status_message_holiday_is_skipped(self):
+        # v1.1.1: is_active_today noch True, status_message traegt den Grund
+        s = self._strat("FLAT", "Börsenfeiertag – kein Handel", is_active_today=True)
+        assert is_no_trading_day_flat(s) is True
+
+    def test_transition_status_message_no_trading_day_is_skipped(self):
+        s = self._strat("FLAT", "Kein Handelstag (Feiertag oder falscher Wochentag)")
+        assert is_no_trading_day_flat(s) is True
+
+    def test_open_position_on_holiday_is_still_checked(self):
+        s = self._strat("IN_POSITION", "Börsenfeiertag, aber Position offen", is_active_today=False)
+        assert is_no_trading_day_flat(s) is False
+
+    def test_regular_day_flat_without_message_is_checked(self):
+        assert is_no_trading_day_flat(self._strat("FLAT")) is False
+
+    def test_missing_display_is_checked(self):
+        assert is_no_trading_day_flat({}) is False

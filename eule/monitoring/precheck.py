@@ -434,6 +434,34 @@ def _condition_active(condition: str, now: datetime) -> bool:
     return False
 
 
+def is_no_trading_day_flat(strat: dict) -> bool:
+    """True, wenn hase fuer die Strategie 'heute kein Handelstag' meldet und sie FLAT ist.
+
+    FSM-Erwartungen der Baselines ("Monday after 10:30 ET" -> IN_POSITION)
+    kennen nur Wochentag + Uhrzeit, keine Boersenfeiertage. hase hat den
+    Kalender (Vorfall 2026-09-07, Labor Day: 4 Fehlalarme). Quelle der
+    Wahrheit ist daher die hase-API, nicht ein eigener Kalender in eule.
+
+    Nur FLAT wird durchgewunken: eine offene Position an einem Nicht-
+    Handelstag bleibt eine pruefwuerdige Abweichung.
+    """
+    display = strat.get("display") or {}
+    if display.get("fsm_state") != "FLAT":
+        return False
+
+    # Variante 1: explizites API-Feld (hase-Runtime setzt _market_closed_today,
+    # is_active_today() -> False). Enthalten ab hase-Release > v1.1.1.
+    if strat.get("is_active_today") is False:
+        return True
+
+    # Variante 2 (UEBERGANG): Prod laeuft noch auf v1.1.1, dort liefert
+    # is_active_today am Feiertag noch True. Die status_message traegt den
+    # Grund aber schon ("Boersenfeiertag - kein Handel" / "Kein Handelstag ...").
+    # KANN AUSGEBAUT WERDEN, sobald alle Envs auf hase-Release > v1.1.1 laufen.
+    msg = (display.get("status_message") or "").lower()
+    return "feiertag" in msg or "kein handelstag" in msg
+
+
 def evaluate_fsm_expectations(
     expectations: list[dict],
     current_state: str,
@@ -626,8 +654,9 @@ def check_environment(env_name: str, env_config: dict, baselines: dict) -> list[
         # in — valid only while its market is open. After the strategy's market
         # close the position is settling (0DTE expires worthless, no CLOSE order);
         # resolution is then validated from the EOD JSON (check_eod_json), not live.
+        # Boersenfeiertag laut hase (is_no_trading_day_flat): FLAT ist dann korrekt.
         close_utc = _strategy_market_close_utc(strat, universe_by_key, now)
-        if close_utc is None or now < close_utc:
+        if (close_utc is None or now < close_utc) and not is_no_trading_day_flat(strat):
             msg = evaluate_fsm_expectations(fsm_config.get("expectations", []), fsm_state, now)
             if msg:
                 anomalies.append(("WARNING", f"{prefix} {msg}"))
