@@ -160,13 +160,6 @@ jobs:
     on_error: [telegram]
     enabled: false
 
-  hamster_ibkr:
-    action: systemd
-    unit: hamster-ibkr.service
-    cron: "0 23 * * *"
-    timeout_minutes: 150
-    on_error: [telegram, email]
-
   hamster_fred:
     action: systemd
     unit: hamster-fred.service

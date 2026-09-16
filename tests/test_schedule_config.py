@@ -164,8 +164,9 @@ class TestLoadSchedule:
         schedule_file = tmp_path / "schedule.yaml"
         schedule_file.write_text(SCHEDULE_TEMPLATE)
         cfg = load_schedule(schedule_file)
-        assert len(cfg.jobs) == 8
+        assert len(cfg.jobs) == 7
         assert cfg.jobs["precheck"].interval_minutes == 15
         assert cfg.jobs["daily_summary"].interval_minutes == 10
         assert cfg.jobs["weekly_report"].cron == "50 23 * * 4"
-        assert cfg.jobs["hamster_ibkr"].unit == "hamster-ibkr.service"
+        assert cfg.jobs["hamster_fred"].unit == "hamster-fred.service"
+        assert "hamster_ibkr" not in cfg.jobs
