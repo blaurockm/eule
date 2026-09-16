@@ -159,25 +159,4 @@ jobs:
     notify: [email]
     on_error: [telegram]
     enabled: false
-
-  hamster_fred:
-    action: systemd
-    unit: hamster-fred.service
-    cron: "30 23 * * *"
-    timeout_minutes: 30
-    on_error: [telegram]
-
-  hamster_derived:
-    action: systemd
-    unit: hamster-derived.service
-    cron: "45 23 * * *"
-    timeout_minutes: 60
-    on_error: [telegram]
-
-  hamster_crypto:
-    action: systemd
-    unit: hamster-crypto.service
-    cron: "0 6 * * *"
-    timeout_minutes: 30
-    on_error: [telegram]
 """
