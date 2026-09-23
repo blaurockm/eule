@@ -102,6 +102,8 @@ const el = (tag, cls, text) => {
 // ── Rendering ────────────────────────────────────────────────
 
 let cachedRows = [];
+/** Environments, deren Strategie-Details aufgeklappt sind (ueberlebt Re-Renders). */
+const openStrategyEnvs = new Set();
 
 function strategyStateClass(strat) {
   const health = (strat.health && strat.health.health) || "OK";
@@ -225,14 +227,37 @@ function renderEnvCard(row, now) {
   }
   card.appendChild(el("p", "env-meta", metaParts.join(" · ")));
 
-  // Strategien
+  // Strategien: eingeklappt, Details erst auf Klick. Der Zustand ueberlebt das
+  // periodische Re-Rendern (render() baut alle Karten alle TICK_MS neu auf).
   const strategies = hb.strategies || [];
   if (!strategies.length) {
     card.appendChild(el("p", "strat-empty", "keine Strategien gemeldet"));
   } else {
+    const details = el("details", "strat-details");
+    details.open = openStrategyEnvs.has(name);
+    details.addEventListener("toggle", () => {
+      if (details.open) openStrategyEnvs.add(name);
+      else openStrategyEnvs.delete(name);
+    });
+
+    const summary = el("summary", "strat-summary");
+    summary.appendChild(el("span", "strat-summary-chevron", "▸"));
+    summary.appendChild(
+      el("span", null, `${strategies.length} ${strategies.length === 1 ? "Strategie" : "Strategien"}`)
+    );
+    const counts = { err: 0, warn: 0 };
+    for (const s of strategies) {
+      const c = strategyStateClass(s);
+      if (c in counts) counts[c] += 1;
+    }
+    if (counts.err) summary.appendChild(el("span", "strat-summary-flag err", `${counts.err} Fehler`));
+    if (counts.warn) summary.appendChild(el("span", "strat-summary-flag warn", `${counts.warn} Warnung${counts.warn === 1 ? "" : "en"}`));
+    details.appendChild(summary);
+
     const ul = el("ul", "strat-list");
     for (const s of strategies) ul.appendChild(renderStrategy(s));
-    card.appendChild(ul);
+    details.appendChild(ul);
+    card.appendChild(details);
   }
 
   return card;
