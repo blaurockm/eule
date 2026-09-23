@@ -140,6 +140,32 @@ function renderStrategy(strat) {
   return li;
 }
 
+/**
+ * Unrealisierter PnL aufgeteilt nach Strategie-Zuordnung.
+ * Quelle 1: pnl.strategy_unrealized / pnl.unattributed_unrealized aus dem Hase-Heartbeat.
+ * Quelle 2 (Fallback): Summe von daily_pnl ueber hb.positions, getrennt nach strategy_key.
+ * null, wenn keine der beiden Quellen vorhanden ist.
+ */
+function unrealizedSplit(hb) {
+  const pnl = hb.pnl || {};
+  if (pnl.strategy_unrealized !== undefined && pnl.strategy_unrealized !== null) {
+    return {
+      strategy: Number(pnl.strategy_unrealized),
+      unattributed: Number(pnl.unattributed_unrealized || 0),
+    };
+  }
+  if (!Array.isArray(hb.positions)) return null;
+  let strategy = 0;
+  let unattributed = 0;
+  for (const p of hb.positions) {
+    if (Math.abs(Number(p.curr_count || 0)) < 1e-12) continue;
+    const v = Number(p.daily_pnl || 0);
+    if (p.strategy_key) strategy += v;
+    else unattributed += v;
+  }
+  return { strategy, unattributed };
+}
+
 function renderEnvCard(row, now) {
   const hb = row.heartbeat || {};
   const name = row.environment || hb.environment || "?";
@@ -166,14 +192,16 @@ function renderEnvCard(row, now) {
   // PnL
   const pnl = hb.pnl || {};
   const currency = (hb.cash && hb.cash.currency) || "";
-  // strategy_unrealized: nur Positionen mit Strategie-Zuordnung (Hase build_heartbeat_payload).
-  // daily_unrealized ist die Konto-Summe inkl. manueller Bestaende — nur Fallback fuer alte Heartbeats.
-  const hasStrategySplit = pnl.strategy_unrealized !== undefined && pnl.strategy_unrealized !== null;
-  const unrealized = hasStrategySplit ? pnl.strategy_unrealized : pnl.daily_unrealized;
+  // Unrealisiert nur fuer Positionen mit Strategie-Zuordnung. daily_unrealized ist die
+  // Konto-Summe inkl. manueller Bestaende (z.B. Aktien ohne strategy_key) und daher irrefuehrend.
+  // Bevorzugt das Hase-Feld strategy_unrealized; fehlt es (aelterer Hase), wird die Summe
+  // aus den mitgelieferten Positionen berechnet.
+  const split = unrealizedSplit(hb);
+  const unrealized = split ? split.strategy : pnl.daily_unrealized;
   const grid = el("div", "env-pnl");
   const cells = [
     ["realisiert", pnl.daily_realized],
-    [hasStrategySplit ? "unrealisiert (Strategien)" : "unrealisiert", unrealized],
+    [split ? "unrealisiert (Strategien)" : "unrealisiert", unrealized],
     ["gesamt", pnl.total],
   ];
   for (const [label, value] of cells) {
@@ -192,7 +220,7 @@ function renderEnvCard(row, now) {
   metaParts.push(`${hb.positions_count ?? 0} Positionen`);
   metaParts.push(`${trades.count_today ?? 0} Trades heute`);
   metaParts.push(th.is_within_hours ? "innerhalb Handelszeit" : "ausserhalb Handelszeit");
-  if (hasStrategySplit && Math.abs(Number(pnl.unattributed_unrealized || 0)) > 0.005) {
+  if (split && Math.abs(split.unattributed) > 0.005) {
     metaParts.push(`Konto unrealisiert gesamt ${fmtSigned(pnl.daily_unrealized)}`);
   }
   card.appendChild(el("p", "env-meta", metaParts.join(" · ")));
