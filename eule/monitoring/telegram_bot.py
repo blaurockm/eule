@@ -42,26 +42,36 @@ PRECHECK_SCRIPT = MONITORING_DIR / "precheck.py"
 EULE_ROOT = MONITORING_DIR.parent.parent  # eule project root
 
 TELEGRAM_POLL_TIMEOUT = 30
+POLL_ERROR_BACKOFF = 5  # Sekunden Pause nach getUpdates-Fehler ohne retry_after
 MAX_MESSAGE_LENGTH = 4096
 
 # --- Telegram API ---
 
 
-def tg_request(method: str, **kwargs) -> dict | None:
-    """Make a Telegram Bot API request."""
+def tg_call(method: str, **kwargs) -> dict:
+    """Roh-Aufruf der Bot API: liefert die komplette Antwort ({"ok": ..., ...}).
+
+    Transportfehler (Timeout, DNS, Reset) werden NICHT gefangen — der Aufrufer
+    entscheidet, ob und wie lange er wartet (siehe TelegramPoller).
+    """
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+    # For long-polling getUpdates, HTTP timeout must exceed Telegram's poll timeout
+    http_timeout = kwargs.get("timeout", 0) + 10 if method == "getUpdates" else 30
+    resp = requests.post(url, json=kwargs, timeout=http_timeout)
+    return resp.json()
+
+
+def tg_request(method: str, **kwargs) -> dict | None:
+    """Make a Telegram Bot API request. Liefert `result` oder None (Fehler geloggt)."""
     try:
-        # For long-polling getUpdates, HTTP timeout must exceed Telegram's poll timeout
-        http_timeout = kwargs.get("timeout", 0) + 10 if method == "getUpdates" else 30
-        resp = requests.post(url, json=kwargs, timeout=http_timeout)
-        data = resp.json()
-        if not data.get("ok"):
-            log.error(f"Telegram API error: {data}")
-            return None
-        return data.get("result")
+        data = tg_call(method, **kwargs)
     except Exception as e:
         log.error(f"Telegram request failed: {e}")
         return None
+    if not data.get("ok"):
+        log.error(f"Telegram API error: {data}")
+        return None
+    return data.get("result")
 
 
 def markdown_to_telegram_html(text: str) -> str:
@@ -774,21 +784,49 @@ class TelegramPoller(threading.Thread):
         log.info("Telegram poller started")
         while self.running:
             try:
-                updates = tg_request(
-                    "getUpdates",
-                    offset=self.offset,
-                    timeout=TELEGRAM_POLL_TIMEOUT,
-                    allowed_updates=["message"],
-                )
-                if updates:
-                    for update in updates:
-                        self.offset = update["update_id"] + 1
-                        msg = update.get("message")
-                        if msg:
-                            self.message_queue.put(msg)
+                self._poll_once()
             except Exception as e:
                 log.error(f"Poller error: {e}")
                 time_module.sleep(10)
+
+    def _poll_once(self) -> None:
+        """Ein getUpdates-Long-Poll inkl. Backoff-Entscheidung.
+
+        - Read-Timeout des Long-Polls: erwartbar (Telegram antwortet gelegentlich
+          nicht innerhalb timeout+10s), sofort weiter.
+        - Sonstiger Transportfehler (DNS, Reset): POLL_ERROR_BACKOFF warten.
+        - API-Fehler (502 im Telegram-Wartungsfenster ~03:10 CEST, 429): warten,
+          bei 429 `parameters.retry_after` respektieren. Ohne Pause hat der Poller
+          6-8 Requests/s abgesetzt und sich damit selbst 429er eingehandelt
+          (Journal 2026-09-23 03:11).
+        """
+        try:
+            data = tg_call(
+                "getUpdates",
+                offset=self.offset,
+                timeout=TELEGRAM_POLL_TIMEOUT,
+                allowed_updates=["message"],
+            )
+        except requests.exceptions.ReadTimeout as e:
+            log.error(f"Telegram request failed: {e}")
+            return
+        except Exception as e:
+            log.error(f"Telegram request failed: {e}")
+            time_module.sleep(POLL_ERROR_BACKOFF)
+            return
+
+        if not data.get("ok"):
+            retry_after = (data.get("parameters") or {}).get("retry_after")
+            wait = float(retry_after) if retry_after else POLL_ERROR_BACKOFF
+            log.error(f"Telegram API error: {data} — warte {wait:g}s")
+            time_module.sleep(wait)
+            return
+
+        for update in data.get("result") or []:
+            self.offset = update["update_id"] + 1
+            msg = update.get("message")
+            if msg:
+                self.message_queue.put(msg)
 
     def stop(self):
         self.running = False
