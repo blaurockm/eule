@@ -74,6 +74,15 @@
   $("expenses-share").textContent = fmt(entry.expenses_share ?? 0);
   $("expenses-share-pct").textContent = `(${fmtPct(entry.expenses_share_pct ?? 0, 0)})`;
 
+  const hb = (g.holder_balances || {})[entry.holder_id];
+  if (hb) {
+    setSigned("holder-balance", hb.balance ?? 0);
+    $("balance-split").textContent =
+      `(Broker ${fmt(hb.balance_broker ?? 0)} · Giro ${fmt(hb.balance_giro ?? 0)})`;
+  } else {
+    $("holder-balance-row").classList.add("hidden");
+  }
+
   $("as-of").textContent = entry.as_of;
   $("generated-at").textContent = (payload.generated_at || "").replace("T", " ").slice(0, 16);
 

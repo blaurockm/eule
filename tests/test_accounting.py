@@ -588,3 +588,49 @@ class TestNegativeExpenses:
             assert p.debit == "6000"  # 6000 an 0H00
             assert p.credit.startswith("01")
             assert p.amount_eur == pytest.approx(5.0)
+
+
+class TestBalancesJsonExport:
+    def test_holder_balances_in_global_block(self, tmp_path, monkeypatch):
+        import json
+
+        from eule.accounting.export import write_balances_json
+        from eule.accounting.models import HolderBalance
+
+        monkeypatch.setenv("EULE_TRADINGGBR_DIR", str(tmp_path))
+        (tmp_path / "tokens.yaml").write_text(
+            "tokens:\n"
+            "  - { holder: A, token: 'token-a-01234567890123456789012345' }\n"
+            "  - { holder: B, token: 'token-b-01234567890123456789012345' }\n"
+        )
+
+        def _hb(holder_id, name, balance, broker, giro):
+            return HolderBalance(
+                holder_id=holder_id,
+                name=name,
+                capital=5000.0,
+                allocated_pnl=0.0,
+                allocated_expenses=0.0,
+                balance=balance,
+                balance_broker=broker,
+                balance_giro=giro,
+                as_of=date(2026, 7, 19),
+            )
+
+        balances = {
+            "A": _hb("A", "Markus", 2222.42, 2203.72, 18.70),
+            "B": _hb("B", "Partner", 12456.07, 12351.30, 104.77),
+        }
+        target = tmp_path / "balances.json"
+        write_balances_json(balances, _cfg(), target)
+
+        payload = json.loads(target.read_text())
+        hb = payload["global"]["holder_balances"]
+        assert set(hb.keys()) == {"A", "B"}
+        assert hb["A"] == {
+            "name": "Markus",
+            "balance": 2222.42,
+            "balance_broker": 2203.72,
+            "balance_giro": 18.70,
+        }
+        assert hb["B"]["balance"] == 12456.07

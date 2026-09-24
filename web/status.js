@@ -1,0 +1,400 @@
+/**
+ * Hase Runtime-Status — eigenstaendige Seite (status.html).
+ *
+ * Unabhaengig von der tradingGbr-Share-App (index.html/app.js/style.css):
+ * kein Token-Schema, keine GbR-Daten. Zugriff ueber Supabase-Auth (Google),
+ * Daten aus der Tabelle `runtime_heartbeats` (RLS: SELECT fuer authenticated).
+ *
+ * Der anon/publishable Key ist oeffentlich — das Zugriffs-Gate ist die RLS-Policy.
+ */
+
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const SUPABASE_URL = "https://iwgilugtlvpxunokqsxx.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_Hi-ahQqFr9rs_5aSN4RPPQ_63zYRJEY";
+
+/** Heartbeat aelter als das hier -> STALE. Ein toter Runtime schreibt gar nichts mehr. */
+const STALE_AFTER_MS = 10 * 60 * 1000;
+const REFRESH_MS = 60 * 1000;
+const TICK_MS = 15 * 1000; // nur Neuberechnung des Alters aus dem Cache
+
+/** Produktions-Environments zuerst, Rest alphabetisch. */
+const PROD_ENVS = ["real-ibkr", "real2-ibkr"];
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const $ = (id) => document.getElementById(id);
+
+const showView = (id) => {
+  ["view-loading", "view-login", "view-data"].forEach((v) =>
+    $(v).classList.toggle("hidden", v !== id)
+  );
+  $("topbar").classList.toggle("hidden", id !== "view-data");
+};
+
+// ── Formatierung ─────────────────────────────────────────────
+
+const fmtNum = (n) =>
+  Number(n || 0).toLocaleString("de-DE", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+const fmtSigned = (n) => {
+  const v = Number(n || 0);
+  return (v > 0 ? "+" : "") + fmtNum(v);
+};
+
+const signClass = (n) => {
+  const v = Number(n || 0);
+  if (v > 0.005) return "positive";
+  if (v < -0.005) return "negative";
+  return "";
+};
+
+const fmtAge = (ms) => {
+  if (ms === null || !isFinite(ms)) return "unbekannt";
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  if (h < 24) return rest ? `${h} h ${rest} min` : `${h} h`;
+  const d = Math.floor(h / 24);
+  return `${d} d ${h % 24} h`;
+};
+
+const fmtClock = (date) =>
+  date.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+/** next_action_time (ISO mit Offset) -> Lokalzeit, mit Datum falls nicht heute. */
+const fmtActionTime = (raw) => {
+  const t = Date.parse(raw);
+  if (isNaN(t)) return raw;
+  const d = new Date(t);
+  const time = d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === new Date().toDateString()) return `${time} Uhr`;
+  const day = d.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit" });
+  return `${day} ${time} Uhr`;
+};
+
+/** Timestamp des Heartbeats (UTC, vom Runtime selbst) — DB-updated_at nur als Fallback. */
+const heartbeatTime = (row) => {
+  const raw = row?.heartbeat?.timestamp || row?.updated_at;
+  if (!raw) return null;
+  const t = Date.parse(raw);
+  return isNaN(t) ? null : t;
+};
+
+const envRank = (name) => {
+  const i = PROD_ENVS.indexOf(name);
+  return i >= 0 ? i : PROD_ENVS.length;
+};
+
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = text;
+  return e;
+};
+
+// ── Rendering ────────────────────────────────────────────────
+
+let cachedRows = [];
+/** Environments, deren Strategie-Details aufgeklappt sind (ueberlebt Re-Renders). */
+const openStrategyEnvs = new Set();
+
+function strategyStateClass(strat) {
+  const health = (strat.health && strat.health.health) || "OK";
+  if (strat.status === "error" || health === "ERROR") return "err";
+  if (health === "WARN") return "warn";
+  if (strat.status === "stopped") return "warn";
+  return "ok";
+}
+
+function renderStrategy(strat) {
+  const li = el("li", "strat");
+
+  const top = el("div", "strat-top");
+  top.appendChild(el("span", "strat-name", strat.name || "?"));
+
+  const display = strat.display || {};
+  const stateLabel = display.fsm_state || (strat.status || "?").toUpperCase();
+  top.appendChild(el("span", `strat-state ${strategyStateClass(strat)}`, stateLabel));
+  li.appendChild(top);
+
+  const msg = display.status_message;
+  if (msg) {
+    li.appendChild(el("p", "strat-msg", msg));
+  } else if (display.next_action_time) {
+    li.appendChild(
+      el("p", "strat-msg", `Wartet auf nächste Action um ${fmtActionTime(display.next_action_time)}`)
+    );
+  } else {
+    li.appendChild(el("p", "strat-msg", "keine Statusmeldung"));
+  }
+
+  const problems = (strat.health && strat.health.problems) || [];
+  if (problems.length) {
+    li.appendChild(el("p", "strat-problems", problems.join(" · ")));
+  }
+  return li;
+}
+
+/**
+ * Unrealisierter PnL aufgeteilt nach Strategie-Zuordnung.
+ * Quelle 1: pnl.strategy_unrealized / pnl.unattributed_unrealized aus dem Hase-Heartbeat.
+ * Quelle 2 (Fallback): Summe von daily_pnl ueber hb.positions, getrennt nach strategy_key.
+ * null, wenn keine der beiden Quellen vorhanden ist.
+ */
+function unrealizedSplit(hb) {
+  const pnl = hb.pnl || {};
+  if (pnl.strategy_unrealized !== undefined && pnl.strategy_unrealized !== null) {
+    return {
+      strategy: Number(pnl.strategy_unrealized),
+      unattributed: Number(pnl.unattributed_unrealized || 0),
+    };
+  }
+  if (!Array.isArray(hb.positions)) return null;
+  let strategy = 0;
+  let unattributed = 0;
+  for (const p of hb.positions) {
+    if (Math.abs(Number(p.curr_count || 0)) < 1e-12) continue;
+    const v = Number(p.daily_pnl || 0);
+    if (p.strategy_key) strategy += v;
+    else unattributed += v;
+  }
+  return { strategy, unattributed };
+}
+
+function renderEnvCard(row, now) {
+  const hb = row.heartbeat || {};
+  const name = row.environment || hb.environment || "?";
+  const card = el("div", "env-card");
+
+  // Kopf: Name + Alters-Badge
+  const head = el("div", "env-head");
+  const nameWrap = el("div", "env-name");
+  nameWrap.appendChild(el("span", null, name));
+  if (PROD_ENVS.includes(name)) nameWrap.appendChild(el("span", "tag-prod", "prod"));
+  head.appendChild(nameWrap);
+
+  const t = heartbeatTime(row);
+  const age = t === null ? null : now - t;
+  const stale = age === null || age > STALE_AFTER_MS;
+  const badge = el(
+    "span",
+    `badge-age ${stale ? "stale" : "fresh"}`,
+    stale ? `STALE · ${fmtAge(age)}` : `vor ${fmtAge(age)}`
+  );
+  head.appendChild(badge);
+  card.appendChild(head);
+
+  // PnL
+  const pnl = hb.pnl || {};
+  const currency = (hb.cash && hb.cash.currency) || "";
+  // Unrealisiert nur fuer Positionen mit Strategie-Zuordnung. daily_unrealized ist die
+  // Konto-Summe inkl. manueller Bestaende (z.B. Aktien ohne strategy_key) und daher irrefuehrend.
+  // Bevorzugt das Hase-Feld strategy_unrealized; fehlt es (aelterer Hase), wird die Summe
+  // aus den mitgelieferten Positionen berechnet.
+  const split = unrealizedSplit(hb);
+  const unrealized = split ? split.strategy : pnl.daily_unrealized;
+  const grid = el("div", "env-pnl");
+  const cells = [
+    ["realisiert", pnl.daily_realized],
+    [split ? "unrealisiert (Strategien)" : "unrealisiert", unrealized],
+    ["gesamt", pnl.total],
+  ];
+  for (const [label, value] of cells) {
+    const cell = el("div");
+    cell.appendChild(el("p", "pnl-cell-label", label));
+    cell.appendChild(el("p", `pnl-cell-value ${signClass(value)}`, fmtSigned(value)));
+    grid.appendChild(cell);
+  }
+  card.appendChild(grid);
+
+  // Meta-Zeile
+  const th = hb.trading_hours || {};
+  const trades = hb.trades || {};
+  const metaParts = [];
+  if (currency) metaParts.push(currency);
+  metaParts.push(`${hb.positions_count ?? 0} Positionen`);
+  metaParts.push(`${trades.count_today ?? 0} Trades heute`);
+  metaParts.push(th.is_within_hours ? "innerhalb Handelszeit" : "ausserhalb Handelszeit");
+  if (split && Math.abs(split.unattributed) > 0.005) {
+    metaParts.push(`Konto unrealisiert gesamt ${fmtSigned(pnl.daily_unrealized)}`);
+  }
+  card.appendChild(el("p", "env-meta", metaParts.join(" · ")));
+
+  // Strategien: eingeklappt, Details erst auf Klick. Der Zustand ueberlebt das
+  // periodische Re-Rendern (render() baut alle Karten alle TICK_MS neu auf).
+  const strategies = hb.strategies || [];
+  if (!strategies.length) {
+    card.appendChild(el("p", "strat-empty", "keine Strategien gemeldet"));
+  } else {
+    const details = el("details", "strat-details");
+    details.open = openStrategyEnvs.has(name);
+    details.addEventListener("toggle", () => {
+      if (details.open) openStrategyEnvs.add(name);
+      else openStrategyEnvs.delete(name);
+    });
+
+    const summary = el("summary", "strat-summary");
+    summary.appendChild(el("span", "strat-summary-chevron", "▸"));
+    summary.appendChild(
+      el("span", null, `${strategies.length} ${strategies.length === 1 ? "Strategie" : "Strategien"}`)
+    );
+    const counts = { err: 0, warn: 0 };
+    for (const s of strategies) {
+      const c = strategyStateClass(s);
+      if (c in counts) counts[c] += 1;
+    }
+    if (counts.err) summary.appendChild(el("span", "strat-summary-flag err", `${counts.err} Fehler`));
+    if (counts.warn) summary.appendChild(el("span", "strat-summary-flag warn", `${counts.warn} Warnung${counts.warn === 1 ? "" : "en"}`));
+    details.appendChild(summary);
+
+    const ul = el("ul", "strat-list");
+    for (const s of strategies) ul.appendChild(renderStrategy(s));
+    details.appendChild(ul);
+    card.appendChild(details);
+  }
+
+  return card;
+}
+
+function render() {
+  const now = Date.now();
+  const list = $("env-list");
+  list.innerHTML = "";
+
+  if (!cachedRows.length) {
+    list.appendChild(el("p", "strat-empty", "keine Heartbeats gefunden"));
+    return;
+  }
+
+  const rows = [...cachedRows].sort((a, b) => {
+    const ra = envRank(a.environment);
+    const rb = envRank(b.environment);
+    if (ra !== rb) return ra - rb;
+    return String(a.environment).localeCompare(String(b.environment));
+  });
+
+  for (const row of rows) list.appendChild(renderEnvCard(row, now));
+}
+
+// ── Daten ────────────────────────────────────────────────────
+
+async function loadData() {
+  const { data, error } = await supabase
+    .from("runtime_heartbeats")
+    .select("environment, heartbeat, updated_at");
+
+  const banner = $("data-error");
+  if (error) {
+    banner.textContent = `Daten konnten nicht geladen werden: ${error.message}`;
+    banner.classList.remove("hidden");
+    render();
+    return;
+  }
+  banner.classList.add("hidden");
+  cachedRows = data || [];
+  $("fetched-at").textContent = fmtClock(new Date());
+  render();
+}
+
+// ── Auth ─────────────────────────────────────────────────────
+
+async function signInWithGoogle() {
+  const redirectTo = window.location.origin + window.location.pathname;
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: { redirectTo },
+  });
+  if (error) throw error;
+}
+
+/** OAuth-Reste (?code=…, #access_token=…) aus der Adresszeile raeumen. */
+function cleanAuthParamsFromUrl() {
+  const url = new URL(window.location.href);
+  let dirty = false;
+  for (const key of ["code", "error", "error_description", "state"]) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      dirty = true;
+    }
+  }
+  if (window.location.hash.includes("access_token")) {
+    url.hash = "";
+    dirty = true;
+  }
+  if (dirty) window.history.replaceState({}, document.title, url.toString());
+}
+
+let timers = [];
+
+function stopTimers() {
+  timers.forEach(clearInterval);
+  timers = [];
+}
+
+async function enterSignedIn() {
+  showView("view-data");
+  await loadData();
+  stopTimers();
+  timers.push(setInterval(loadData, REFRESH_MS));
+  timers.push(setInterval(render, TICK_MS)); // Alter mitlaufen lassen
+}
+
+function enterSignedOut() {
+  stopTimers();
+  cachedRows = [];
+  showView("view-login");
+}
+
+async function main() {
+  $("login-btn").addEventListener("click", async () => {
+    const btn = $("login-btn");
+    btn.disabled = true;
+    try {
+      await signInWithGoogle();
+    } catch (e) {
+      const err = $("login-error");
+      err.textContent = e instanceof Error ? e.message : "Login fehlgeschlagen";
+      err.classList.remove("hidden");
+      btn.disabled = false;
+    }
+  });
+
+  $("logout-btn").addEventListener("click", async () => {
+    await supabase.auth.signOut();
+    enterSignedOut();
+  });
+
+  supabase.auth.onAuthStateChange((event, session) => {
+    if (session) {
+      cleanAuthParamsFromUrl();
+      if ($("view-data").classList.contains("hidden")) enterSignedIn();
+    } else if (event === "SIGNED_OUT") {
+      enterSignedOut();
+    }
+  });
+
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  if (session) {
+    cleanAuthParamsFromUrl();
+    await enterSignedIn();
+  } else {
+    enterSignedOut();
+  }
+
+  // Beim Zurueckkehren auf den Tab sofort frische Daten holen.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && !$("view-data").classList.contains("hidden")) loadData();
+  });
+}
+
+main();

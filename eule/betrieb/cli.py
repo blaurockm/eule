@@ -136,11 +136,12 @@ def bot() -> None:
 
 def serve(
     port: int = typer.Option(8780, "--port", help="HTTP-Port"),
+    bind: str = typer.Option("0.0.0.0", "--bind", help="Bind-Adresse (z.B. Tailnet-IP)"),
 ) -> None:
     """Wachtel Web-Dashboard starten."""
     from eule.monitoring.web import serve as web_serve
 
-    web_serve(port=port)
+    web_serve(port=port, bind=bind)
 
 
 # ── Schedule ────────────────────────────────────────

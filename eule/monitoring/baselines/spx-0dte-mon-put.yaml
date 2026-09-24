@@ -22,13 +22,13 @@ fsm:
 
 metrics:
   win_rate:
-    expected: 0.922
+    expected: 0.938
     warn_below: 0.80
     lookback_trades: 20
   profit_factor:
     expected: null
   max_daily_loss:
-    warn_below: -1500.0
+    warn_below: -2000.0
   trade_frequency:
     expected_per_week: 1.0
     warn_if_zero_days: 10

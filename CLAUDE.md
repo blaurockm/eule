@@ -26,7 +26,8 @@ Lies `eule-spec-prompt.md` in diesem Repo — das ist die vollständige Anforder
 
 | Was | Pfad |
 |-----|------|
-| Hase-Verzeichnis (Logs, Fuchs-Config) | `EULE_HASE_DIR` oder `~/fin/hase` |
+| Hase-Runtime-Logs | `EULE_HASE_DIR` oder `/srv/hase/{staging,prod}/werkstatt/logs` |
+| Hase-Strategy-JSONs | `EULE_STRATEGIES_DIR` oder `/srv/hase/docs-src/strategies` |
 | Positionen + Thesen + Exit-Kriterien | `~/fin/trading-collab/positions-bh.md` |
 | B&H Playbook | `~/fin/trading-collab/buy-and-hold-playbook.md` |
 | EP Daily Playbook | `~/fin/trading-collab/ep-daily-playbook.md` |
@@ -43,7 +44,9 @@ DB-Zugang über Umgebungsvariablen (in `~/eule/.env` auf systematic):
 | `EULE_DB_REAL2_IBKR` | Production IBKR #2 | `postgresql://...` |
 | `EULE_DB_STAGING_IBKR` | Staging IBKR | `postgresql://...` |
 | `EULE_DB_STAGING_HL` | Staging HL | `postgresql://...` |
-| `EULE_HASE_DIR` | Hase-Verzeichnis (Logs, Fuchs) | `~/fin/hase` (default) |
+| `EULE_HASE_DIR` | Override fuer die Runtime-Logs (Tests/Dev) | `/srv/hase/{staging,prod}/werkstatt` (default) |
+| `EULE_STRATEGIES_DIR` | Hase-Strategy-JSONs (Checkout, taeglich gepullt) | `/srv/hase/docs-src/strategies` (default) |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `EMAIL_FROM` / `EMAIL_TO` | Mailversand (Pipeline + Wachtel); `EMAIL_TO` kommasepariert | `posteo.de` / `587` / … |
 | `EULE_TRADINGGBR_DIR` | tradingGbr-Buchhaltungsdaten | `~/Dokumente/obsidian/tradingGbr` (default) |
 | `EULE_IBKR_FLEX_TOKEN` | IBKR Flex Web Service Token (1 Jahr gueltig) | aus IBKR Account Management |
 | `EULE_IBKR_FLEX_QUERY_ID` | Flex-Query-ID fuer Statement of Funds | aus IBKR Flex Queries |
