@@ -191,25 +191,41 @@ function renderEnvCard(row, now) {
   head.appendChild(badge);
   card.appendChild(head);
 
-  // PnL
+  // PnL + NAV
   const pnl = hb.pnl || {};
-  const currency = (hb.cash && hb.cash.currency) || "";
+  const account = hb.account || {};
+  const currency = account.currency || (hb.cash && hb.cash.currency) || "";
   // Unrealisiert nur fuer Positionen mit Strategie-Zuordnung. daily_unrealized ist die
   // Konto-Summe inkl. manueller Bestaende (z.B. Aktien ohne strategy_key) und daher irrefuehrend.
   // Bevorzugt das Hase-Feld strategy_unrealized; fehlt es (aelterer Hase), wird die Summe
   // aus den mitgelieferten Positionen berechnet.
   const split = unrealizedSplit(hb);
   const unrealized = split ? split.strategy : pnl.daily_unrealized;
+  // NAV aus hb.account: tagsueber vom Start-NAV abgeleitet (nav_source "derived"),
+  // nach dem Tagesabschluss vom Broker gemessen ("measured"). Kein PnL, daher
+  // ohne Vorzeichen und ohne Farbe. Fehlt der Block (aelterer Hase): "n/a".
+  const navValue = account.nav;
+  const hasNav = navValue !== undefined && navValue !== null;
+  const navLabel =
+    account.nav_source === "measured"
+      ? "NAV (Broker)"
+      : account.nav_source === "derived"
+        ? "NAV (abgeleitet)"
+        : "NAV";
   const grid = el("div", "env-pnl");
   const cells = [
-    ["realisiert", pnl.daily_realized],
-    [split ? "unrealisiert (Strategien)" : "unrealisiert", unrealized],
-    ["gesamt", pnl.total],
+    ["realisiert", pnl.daily_realized, true],
+    [split ? "unrealisiert (Strategien)" : "unrealisiert", unrealized, true],
+    [navLabel, navValue, false],
   ];
-  for (const [label, value] of cells) {
+  for (const [label, value, isPnl] of cells) {
     const cell = el("div");
     cell.appendChild(el("p", "pnl-cell-label", label));
-    cell.appendChild(el("p", `pnl-cell-value ${signClass(value)}`, fmtSigned(value)));
+    if (isPnl) {
+      cell.appendChild(el("p", `pnl-cell-value ${signClass(value)}`, fmtSigned(value)));
+    } else {
+      cell.appendChild(el("p", "pnl-cell-value", hasNav ? fmtNum(value) : "n/a"));
+    }
     grid.appendChild(cell);
   }
   card.appendChild(grid);
@@ -219,6 +235,10 @@ function renderEnvCard(row, now) {
   const trades = hb.trades || {};
   const metaParts = [];
   if (currency) metaParts.push(currency);
+  if (hasNav && account.nav_source === "measured" && account.nav_eod_time) {
+    const navT = Date.parse(account.nav_eod_time);
+    if (!isNaN(navT)) metaParts.push(`NAV gemessen ${fmtClock(new Date(navT)).slice(0, 5)}`);
+  }
   metaParts.push(`${hb.positions_count ?? 0} Positionen`);
   metaParts.push(`${trades.count_today ?? 0} Trades heute`);
   metaParts.push(th.is_within_hours ? "innerhalb Handelszeit" : "ausserhalb Handelszeit");

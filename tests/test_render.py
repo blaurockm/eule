@@ -1,6 +1,7 @@
 """Tests fuer die Telegram-/Email-Renderer in monitoring/render.py."""
 
 from eule.monitoring.render import (
+    env_warnings,
     parse_anomaly_line,
     render_alert_telegram,
     render_anomaly_email_html,
@@ -63,6 +64,61 @@ def test_env_daily_telegram_warnings_and_escaping():
     out = render_env_daily_telegram(data)
     assert "gap &lt; 5min" in out
     assert "POTENZIELL UNZUVERLAESSIG" in out
+    assert "Hinweise" not in out
+
+
+def test_env_warnings_info_does_not_flag_pnl():
+    msgs = env_warnings(
+        {"warnings": [{"level": "info", "source": "reconciliation", "affects_pnl": False,
+                       "message": "Kontoabgleich Available Funds: 42062.60 -> 42151.53 (Delta +88.93 EUR)"}]}
+    )
+    assert msgs.warnings == []
+    assert msgs.pnl_unreliable is False
+    assert len(msgs.infos) == 1
+    assert msgs.infos[0].startswith("Kontoabgleich Available Funds")
+    assert "enthaelt Gebuehren, Zinsen, FX" in msgs.infos[0]
+
+
+def test_env_warnings_warning_with_affects_pnl_flags_pnl():
+    msgs = env_warnings(
+        {"warnings": [{"level": "warning", "source": "reconciliation", "affects_pnl": True,
+                       "message": "Positionsabweichung SPX 7740P: Broker 2 vs persistiert 1"}]}
+    )
+    assert msgs.infos == []
+    assert msgs.warnings == ["Positionsabweichung SPX 7740P: Broker 2 vs persistiert 1"]
+    assert msgs.pnl_unreliable is True
+
+
+def test_env_warnings_info_with_affects_pnl_is_ignored_for_flag():
+    # affects_pnl auf einem Info-Eintrag darf den PnL nicht als unzuverlaessig markieren
+    msgs = env_warnings({"warnings": [{"level": "info", "affects_pnl": True, "message": "x"}]})
+    assert msgs.pnl_unreliable is False
+
+
+def test_env_warnings_plain_strings_are_warnings():
+    msgs = env_warnings({"warnings": ["settlement skipped"]})
+    assert msgs.warnings == ["settlement skipped"]
+    assert msgs.pnl_unreliable is False
+    assert bool(msgs) is True
+    assert bool(env_warnings({})) is False
+
+
+def test_env_daily_telegram_info_rendered_as_hint():
+    data = _daily_data(warnings=[{"level": "info", "source": "reconciliation",
+                                  "message": "Kontoabgleich Available Funds: Delta +88.93 EUR"}])
+    out = render_env_daily_telegram(data)
+    assert "Hinweise" in out
+    assert "Kontoabgleich Available Funds" in out
+    assert "Warnungen" not in out
+    assert "POTENZIELL UNZUVERLAESSIG" not in out
+
+
+def test_env_daily_telegram_nav_broker():
+    data = _daily_data()
+    data["portfolio"]["nav_broker"] = 44915.97
+    out = render_env_daily_telegram(data)
+    assert "NAV (Broker) 44,915.97" in out
+    assert "NAV (Broker)" not in render_env_daily_telegram(_daily_data())
 
 
 def test_env_daily_telegram_no_sections_when_empty():
@@ -125,6 +181,26 @@ def test_daily_email_without_missing_or_anomalies():
     )
     assert "Kein EOD-JSON" not in html
     assert "Offene Anomalien" not in html
+
+
+def test_daily_email_info_and_warning_styles():
+    data = _daily_data(warnings=[
+        {"level": "info", "source": "reconciliation", "message": "Kontoabgleich Delta +88.93"},
+        {"level": "warning", "affects_pnl": True, "message": "gap < 5min"},
+    ])
+    data["portfolio"]["nav_broker"] = 44915.97
+    html = render_daily_email_html({"real-ibkr": data}, missing=[], open_anomalies=[], date_str="2026-10-01")
+    assert "ℹ Kontoabgleich Delta +88.93 (enthaelt Gebuehren" in html
+    assert "⚠ gap &lt; 5min" in html
+    assert "POTENZIELL UNZUVERLAESSIG" in html
+    assert "NAV (Broker)" in html and "44,915.97" in html
+
+
+def test_daily_email_info_only_no_unreliable():
+    data = _daily_data(warnings=[{"level": "info", "source": "reconciliation", "message": "Kontoabgleich"}])
+    html = render_daily_email_html({"real-ibkr": data}, missing=[], open_anomalies=[], date_str="2026-10-01")
+    assert "POTENZIELL UNZUVERLAESSIG" not in html
+    assert "⚠ Kontoabgleich" not in html
 
 
 # --- Anomalie-Email ---

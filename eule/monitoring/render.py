@@ -11,6 +11,7 @@ fsm_states{}, optional warnings[]).
 """
 
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -37,29 +38,63 @@ def _date_de(date_str: str) -> str:
     return f"{_WEEKDAYS_DE_SHORT[d.weekday()]} {d.strftime('%d.%m.%Y')}"
 
 
-def env_warnings(data: dict) -> list[str]:
-    """Datenqualitaets-Warnungen eines Envs als Textzeilen.
+_RECONCILIATION_NOTE = (
+    "(enthaelt Gebuehren, Zinsen, FX und Kursaenderungen von Positionen "
+    "ausserhalb der Strategien)"
+)
 
-    Hase schreibt optional ein 'warnings'-Feld (Liste). Kein Schema-Raten:
-    Dict-Warnungen werden ueber 'message'/'msg' gerendert, sonst als JSON;
-    alles andere per str(). Ist affects_pnl gesetzt, wird eine Zeile
-    angehaengt, die den Daily-PnL als potenziell unzuverlaessig markiert.
+
+@dataclass(frozen=True)
+class EnvWarnings:
+    """Nach Level getrennte Hase-Meldungen eines Envs.
+
+    infos: level "info" — Hinweise ohne Warncharakter (z.B. Kontoabgleich).
+    warnings: alles andere (warning/error, Strings).
+    pnl_unreliable: nur wenn eine echte Warnung affects_pnl traegt.
+    """
+
+    infos: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    pnl_unreliable: bool = False
+
+    def __bool__(self) -> bool:
+        return bool(self.infos or self.warnings)
+
+
+PNL_UNRELIABLE_LINE = "Daily-PnL POTENZIELL UNZUVERLAESSIG"
+
+
+def env_warnings(data: dict) -> EnvWarnings:
+    """Datenqualitaets-Meldungen eines Envs, nach Level getrennt.
+
+    Hase schreibt optional ein 'warnings'-Feld (Liste). Dict-Eintraege
+    (level/source/affects_pnl/message) werden ueber 'message'/'msg'
+    gerendert, sonst als JSON; Strings per str() als Warnung.
+    level "info" landet in infos; fuer source "reconciliation" wird der
+    feste Erklaerungszusatz angehaengt, damit ein Kontoabgleich nicht wie
+    ein Fehler wirkt. Der UNZUVERLAESSIG-Hinweis entsteht nur aus einer
+    Warnung (level != info) mit affects_pnl.
     """
     import json
 
-    lines: list[str] = []
-    affects_pnl = False
+    infos: list[str] = []
+    warnings: list[str] = []
+    pnl_unreliable = False
     for w in data.get("warnings") or []:
         if isinstance(w, dict):
             msg = w.get("message") or w.get("msg") or json.dumps(w, default=str)
+            level = str(w.get("level") or "warning").lower()
+            if level == "info":
+                if str(w.get("source") or "") == "reconciliation":
+                    msg = f"{msg} {_RECONCILIATION_NOTE}"
+                infos.append(msg)
+                continue
             if w.get("affects_pnl"):
-                affects_pnl = True
+                pnl_unreliable = True
+            warnings.append(msg)
         else:
-            msg = str(w)
-        lines.append(msg)
-    if affects_pnl:
-        lines.append("Daily-PnL POTENZIELL UNZUVERLAESSIG")
-    return lines
+            warnings.append(str(w))
+    return EnvWarnings(infos=infos, warnings=warnings, pnl_unreliable=pnl_unreliable)
 
 
 # ---------------------------------------------------------------------------
@@ -81,17 +116,26 @@ def render_env_daily_telegram(data: dict) -> str:
 
     daily_pnl = portfolio.get("daily_pnl", 0.0) or 0.0
     equity = portfolio.get("equity")
+    nav_broker = portfolio.get("nav_broker")
     lines = [f"\U0001f989 <b>Daily {_esc(env)}</b> — {_esc(_date_de(date_str))}"]
     pnl_line = f"PnL <b>{_fmt_money(daily_pnl)}</b>"
     if equity is not None:
         pnl_line += f" · Equity {equity:,.0f}"
+    if nav_broker is not None:
+        pnl_line += f" · NAV (Broker) {nav_broker:,.2f}"
     lines.append(pnl_line)
 
-    warnings = env_warnings(data)
-    if warnings:
+    msgs = env_warnings(data)
+    if msgs.warnings or msgs.pnl_unreliable:
         lines.append("")
         lines.append("⚠ <b>Warnungen:</b>")
-        lines.extend(f"• {_esc(w)}" for w in warnings)
+        lines.extend(f"• {_esc(w)}" for w in msgs.warnings)
+        if msgs.pnl_unreliable:
+            lines.append(f"• {PNL_UNRELIABLE_LINE}")
+    if msgs.infos:
+        lines.append("")
+        lines.append("ℹ <b>Hinweise:</b>")
+        lines.extend(f"• {_esc(w)}" for w in msgs.infos)
 
     active: list[str] = []
     inactive: list[str] = []
@@ -240,6 +284,8 @@ _EMAIL_STYLE = {
               "text-align: right; font-variant-numeric: tabular-nums;",
     "warn": "background: #fff8e6; border-left: 4px solid #e6a700; "
             "padding: 8px 12px; margin: 8px 0;",
+    "info": "background: #f4f6f8; border-left: 4px solid #9aa5b1; color: #444; "
+            "padding: 8px 12px; margin: 8px 0;",
     "crit": "background: #fdeaea; border-left: 4px solid #cc2222; "
             "padding: 8px 12px; margin: 8px 0;",
     "muted": "color: #999; font-size: 11px;",
@@ -293,12 +339,19 @@ def _env_daily_email_section(data: dict) -> str:
     parts.append(_kpi("Unrealized", _fmt_money(unrealized), _pnl_color(unrealized)))
     if "equity" in portfolio:
         parts.append(_kpi("Equity", f"{portfolio['equity']:,.0f}"))
+    if portfolio.get("nav_broker") is not None:
+        parts.append(_kpi("NAV (Broker)", f"{portfolio['nav_broker']:,.2f}"))
     if "cash" in portfolio:
         parts.append(_kpi("Cash", f"{portfolio['cash']:,.0f}"))
     parts.append("</div>")
 
-    for w in env_warnings(data):
+    msgs = env_warnings(data)
+    for w in msgs.warnings:
         parts.append(f"<div style='{_EMAIL_STYLE['warn']}'>⚠ {_esc(w)}</div>")
+    if msgs.pnl_unreliable:
+        parts.append(f"<div style='{_EMAIL_STYLE['warn']}'>⚠ {PNL_UNRELIABLE_LINE}</div>")
+    for w in msgs.infos:
+        parts.append(f"<div style='{_EMAIL_STYLE['info']}'>ℹ {_esc(w)}</div>")
 
     strategies = data.get("strategies", [])
     if strategies:
