@@ -127,7 +127,7 @@ Beispiel-Templates: `eule/accounting/examples/*.yaml`.
 - `eule accounting tax --year YYYY --format csv` — Steuer-Report (Kapitaleinkuenfte)
 
 **Workflow**: `eule accounting fetch && eule accounting refresh && git push`
-→ Vercel deployt automatisch.
+→ danach Vercel-Deploy von Hand anstossen (der Push loest KEIN automatisches Deployment aus).
 
 **Vercel-App** (`web/`): vanilla HTML+JS, kein Build. Vercel-Project auf das Repo zeigen, Root Directory = `web/`.
 
