@@ -45,6 +45,7 @@ ENVIRONMENTS = {
     "staging-ibkr": {
         "port": 8776,
         "tier": "staging",
+        "monitoring": False,  # abgeschaltet 2026-11-03 (0DTE-Strategie eingestellt), Cron entfernt
         "trading_hours": {
             "weekdays": [0, 1, 2, 3, 4],
             "start": "09:00",
@@ -79,6 +80,7 @@ ENVIRONMENTS = {
     "real-ibkr": {
         "port": 8767,
         "tier": "production",
+        "monitoring": False,  # abgeschaltet 2026-11-03 (0DTE-Strategie eingestellt), Cron entfernt
         "unrealized_threshold": -5000,
         "trading_hours": {
             "weekdays": [0, 1, 2, 3, 4],
