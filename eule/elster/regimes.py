@@ -13,6 +13,21 @@ import pandas as pd
 
 from eule.elster.data import Regime
 
+RUN_DATE_TZ = "Europe/Berlin"
+
+
+def _run_date(started_at) -> date:
+    """Kalendertag eines Runs in Berliner Zeit.
+
+    Explizite Umrechnung, weil die Zeitzone der gelieferten Zeitstempel von der
+    DB-Sitzung abhaengt (Supabase-Pooler liefert UTC): ein Start um 00:01 Berlin
+    waere in UTC noch der Vortag.
+    """
+    ts = pd.Timestamp(started_at)
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert(RUN_DATE_TZ)
+    return ts.date()
+
 
 def detect_regimes(
     runs_df: pd.DataFrame,
@@ -49,7 +64,7 @@ def detect_regimes(
             configs = json.loads(configs)
 
         strategy_config = configs.get(strategy_key, {})
-        run_date = pd.Timestamp(row["started_at"]).date()
+        run_date = _run_date(row["started_at"])
 
         if current_config is None:
             # Erstes Regime starten
@@ -162,7 +177,7 @@ def _fallback_single_regime(runs_df: pd.DataFrame) -> list[Regime]:
     """Wenn keine strategy_configs vorhanden: gesamten Zeitraum als ein Regime."""
     if runs_df.empty:
         return []
-    start = pd.Timestamp(runs_df.iloc[0]["started_at"]).date()
+    start = _run_date(runs_df.iloc[0]["started_at"])
     return [
         Regime(
             start_date=start,
