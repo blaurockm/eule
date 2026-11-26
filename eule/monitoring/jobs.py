@@ -265,10 +265,22 @@ def job_ep_brief(
         )
 
 
+def job_db_backup(
+    alert_callback: Callable[..., None],
+    email_callback: Callable[..., None],
+    job_config: JobConfig,
+) -> None:
+    """Taeglicher pg_dump der Hase-DB. Still bei Erfolg; Fehler meldet der Scheduler (on_error)."""
+    from eule.monitoring.db_backup import run_backup
+
+    run_backup()
+
+
 # Registry: function-Name aus schedule.yaml → Callable
 INTERNAL_JOBS: dict[str, Callable] = {
     "precheck": job_precheck,
     "daily_summary": job_daily_summary,
     "weekly_report": job_weekly_report,
     "ep_brief": job_ep_brief,
+    "db_backup": job_db_backup,
 }
